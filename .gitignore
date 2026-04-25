@@ -1,0 +1,16 @@
+# 编译产物
+build/
+
+# 数据文件（运行时生成，不提交）
+data/
+
+# 编辑器
+.vscode/
+*.swp
+*.swo
+
+# 日志
+*.log
+
+# cursor
+.cursor/

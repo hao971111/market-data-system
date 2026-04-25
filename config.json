@@ -1,0 +1,17 @@
+{
+    "data_sources": [
+        {
+            "name": "binance_main",
+            "ws_url": "wss://stream.binance.com:9443/ws",
+            "priority": 0,
+            "enabled": true
+        }
+    ],
+    "symbols": ["btcusdt", "ethusdt", "solusdt"],
+    "data_dir": "./data",
+    "ring_buffer_size": 100000,
+    "reconnect_interval_ms": 100,
+    "ping_interval_ms": 1000,
+    "pong_timeout_ms": 1000,
+    "log_level": 1
+}
