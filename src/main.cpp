@@ -15,39 +15,60 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include "config/config.h"
+#include "network/connection_manager.h"
+#include "storage/binary_trade_writer.h"
 
-// 全局运行标志，用于优雅关闭
 std::atomic<bool> g_running{true};
 
-// 信号处理函数：捕获SIGINT(Ctrl+C)和SIGTERM，实现优雅关闭
 void signal_handler(int signum) {
     std::cout << "\n[INFO] Received signal " << signum << ", shutting down..." << std::endl;
     g_running = false;
 }
 
-int main(int argc, char* argv[]) {
-    (void)argc;
-    (void)argv;
-    // 注册信号处理
+int main() {
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
     std::cout << "==================================" << std::endl;
     std::cout << " Market Data System v0.1.0" << std::endl;
     std::cout << "==================================" << std::endl;
-    std::cout << "[INFO] System starting..." << std::endl;
 
-    // TODO: 初始化配置模块
-    // TODO: 初始化WebSocket连接
-    // TODO: 初始化存储模块
-    // TODO: 启动数据处理循环
+    mds::Config config;
+    config.load("config.json");
 
-    // 主循环（后续替换为事件驱动）
+    mds::BinaryTradeWriter trade_writer;
+    if (!trade_writer.open(config.data_dir, config.ring_buffer_size)) {
+        return 1;
+    }
+
+    mds::ConnectionManager mgr(config);
+
+    mgr.set_trade_callback([&trade_writer](const mds::Trade& t) {
+        if (!trade_writer.write(t)) {
+            std::cerr << "[ERROR] Failed to write trade" << std::endl;
+        }
+
+        std::cout << "[TRADE] " << t.symbol
+                  << " price=" << t.price
+                  << " qty=" << t.quantity << std::endl;
+    });
+
+    mgr.set_orderbook_callback([](const mds::OrderBookSnapshot& ob) {
+        std::cout << "[BOOK]  " << ob.symbol
+                  << " bid=" << ob.best_bid_price()
+                  << " ask=" << ob.best_ask_price()
+                  << " spread=" << ob.spread() << std::endl;
+    });
+
+    const auto& url = config.data_sources[0].ws_url;
+    mgr.start(url);
+
     while (g_running) {
-        // 暂时sleep，后续改为事件驱动
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
+    mgr.stop();
     std::cout << "[INFO] System shutdown complete." << std::endl;
     return 0;
 }

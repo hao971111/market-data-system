@@ -1,4 +1,5 @@
 #include "connection_manager.h"
+#include "../parser/parser.h"
 #include <iostream>
 #include <algorithm>
 #include <nlohmann/json.hpp>
@@ -46,7 +47,9 @@ void ConnectionManager::reconnect_loop(const std::string& url) {
         {
             std::lock_guard<std::mutex> lock(client_mutex_);  // 严重-4修复
             client_ = std::make_unique<WebSocketClient>();
-            client_->set_message_callback(on_message_);
+            client_->set_message_callback([this](const std::string& msg) {
+                on_raw_message(msg);
+            });
             client_->set_disconnect_callback([this]() {
                 need_reconnect_ = true;
                 cv_.notify_all();
@@ -129,6 +132,25 @@ std::string ConnectionManager::build_subscribe_msg(
         {"id", 1}
     };
     return msg.dump();
+}
+
+// 解析原始消息并分发给上层回调
+void ConnectionManager::on_raw_message(const std::string& msg) {
+    // 先尝试解析为 trade
+    if (auto trade = Parser::parse_trade(msg)) {
+        if (on_trade_) on_trade_(*trade);
+        return;
+    }
+    
+    // 再尝试解析为 orderbook（需要知道是哪个 symbol）
+    // 注意：depth 消息里没有 symbol，从消息流中无法直接判断
+    // 当前简化：逐个 symbol 尝试（后续可通过流名称改进）
+    for (const auto& sym : config_.symbols) {
+        if (auto ob = Parser::parse_orderbook(msg, sym)) {
+            if (on_orderbook_) on_orderbook_(*ob);
+            return;
+        }
+    }
 }
 
 // 指数退避：100ms, 200ms, 400ms, 800ms, ... 最大 30s

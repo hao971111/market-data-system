@@ -73,7 +73,52 @@
 
 ---
 
-## 存储层（待开发时补充）
+## 解析层（parser/）
+
+### 11. OrderBook 时间戳精度
+- **现状**：depth 消息无交易所时间戳，用本地时间代替
+- **问题**：本地时间和交易所时间有偏差（几ms），无法精确对齐 trade 和 orderbook
+- **生产级**：用 `lastUpdateId` 做序号对齐，或订阅 `@bookTicker` 获取带时间戳的版本
+
+---
+
+### 12. Combined Stream 精确 symbol 分发
+
+- **现状**：depth 消息无 symbol，`on_raw_message` 遍历所有 symbol 逐个尝试（第一个成功即返回），多 symbol 时归属可能错误
+- **生产级**：改用 Binance Combined Stream（`wss://...?streams=btcusdt@depth/ethusdt@trade`），外层有 `{"stream":"btcusdt@depth","data":{...}}`，先取 `stream` 字段直接定位 symbol，精确分发
+- **改造点**：`build_subscribe_msg` 改为 combined stream URL，`on_raw_message` 先路由 stream 再解析
+
+---
+
+## 存储层
+
+### 13. 写盘线程模型
+
+- **现状**：`BinaryTradeWriter::write` 只把 `Trade` 放入有界队列，后台写盘线程批量写入 `trades.bin`
+- **问题**：当前队列是 `std::deque + mutex`，队列满时直接返回失败；还没有暴露队列积压、写入延迟、丢弃计数等运行时指标
+- **生产级**：替换为无锁/低锁 SPSC 队列，批量写入策略可配置，并把队列深度、写入耗时、丢弃数量接入监控
+
+### 14. 文件切分与索引
+
+- **现状**：启动时覆盖写入单个 `trades.bin`
+- **问题**：长时间运行后文件过大，也不方便按时间范围查询
+- **生产级**：按日期/小时/symbol 分文件，并维护时间索引，支持快速回放定位
+
+### 15. 文件完整性校验
+
+- **现状**：`BinaryTradeReader` 只校验文件头 magic/version/record_size，顺序读取 `Trade`
+- **问题**：如果进程崩溃或磁盘写入异常，文件尾部可能出现半条记录，目前只能读到失败为止，无法区分正常 EOF 和损坏
+- **生产级**：文件头记录 record_count，文件块增加 checksum/CRC，启动时可扫描并截断损坏尾部
+
+---
+
+## 回放层
+
+### 16. 回放时间控制
+
+- **现状**：`TradeReplayer::replay_all` 只按文件顺序最快速度回放全部 Trade
+- **问题**：不能按时间范围过滤，也不能按原始时间间隔或倍速回放
+- **生产级**：结合时间索引快速定位起止位置，并根据 `timestamp_us` 控制回放节奏，支持 1x/10x/最快模式
 
 ---
 
