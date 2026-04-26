@@ -24,9 +24,11 @@ public:
     
     // 连接到WebSocket服务器
     // url格式: wss://stream.binance.com:9443/ws/btcusdt@trade
+    // proxy_url: HTTP CONNECT 代理，格式 http://host:port，空字符串=直连
     // ping_interval_ms: 心跳Ping间隔（兜底保活）
     // no_data_timeout_ms: 无数据超时（主要断线检测手段）
     bool connect(const std::string& url,
+                 const std::string& proxy_url = "",
                  int ping_interval_ms = 1000,
                  int no_data_timeout_ms = 3000);
     

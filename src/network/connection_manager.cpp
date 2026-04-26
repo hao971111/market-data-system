@@ -68,7 +68,8 @@ void ConnectionManager::reconnect_loop(const std::string& url) {
         std::cout << "[ConnectionManager] Connecting (attempt " 
                   << attempt + 1 << ")..." << std::endl;
 
-        bool ok = client_->connect(url, config_.ping_interval_ms, config_.no_data_timeout_ms);
+        bool ok = client_->connect(url, config_.proxy_url,
+                                   config_.ping_interval_ms, config_.no_data_timeout_ms);
 
         if (ok) {
             std::cout << "[ConnectionManager] Connected." << std::endl;
@@ -135,22 +136,77 @@ std::string ConnectionManager::build_subscribe_msg(
 }
 
 // 解析原始消息并分发给上层回调
+//
+// Combined stream 端点（/stream）的消息格式：
+//   {"stream": "btcusdt@depth20@100ms", "data": { ... 真正的业务字段 ... }}
+//
+// 这里我们：
+//   1) 剥外层，校验 stream / data 字段都在
+//   2) 从 stream 名前缀拿 symbol（btcusdt@xxx -> btcusdt），解决了之前
+//      depth 消息没 symbol 字段、只能瞎猜导致全部贴标 btcusdt 的 bug
+//   3) 按 @后缀 区分流类型，分发到 trade / orderbook 解析器
+//   4) 订阅 ack 等控制消息没有 stream 字段，直接丢弃（不算错误）
 void ConnectionManager::on_raw_message(const std::string& msg) {
-    // 先尝试解析为 trade
-    if (auto trade = Parser::parse_trade(msg)) {
-        if (on_trade_) on_trade_(*trade);
+    nlohmann::json outer;
+    try {
+        outer = nlohmann::json::parse(msg);
+    } catch (const nlohmann::json::exception& e) {
+        std::cerr << "[ConnectionManager] outer JSON parse error: "
+                  << e.what() << std::endl;
         return;
     }
-    
-    // 再尝试解析为 orderbook（需要知道是哪个 symbol）
-    // 注意：depth 消息里没有 symbol，从消息流中无法直接判断
-    // 当前简化：逐个 symbol 尝试（后续可通过流名称改进）
-    for (const auto& sym : config_.symbols) {
-        if (auto ob = Parser::parse_orderbook(msg, sym)) {
-            if (on_orderbook_) on_orderbook_(*ob);
-            return;
+
+    // 控制消息（订阅 ack: {"result":null,"id":1}）没有 stream/data 字段，正常忽略
+    if (!outer.contains("stream") || !outer.contains("data")) {
+        return;
+    }
+
+    // stream 形如 "btcusdt@trade" 或 "btcusdt@depth20@100ms"
+    // 第一个 '@' 之前是 symbol，之后是流类型描述
+    std::string stream_name;
+    try {
+        stream_name = outer["stream"].get<std::string>();
+    } catch (const nlohmann::json::exception&) {
+        return;  // stream 字段类型不对，丢弃
+    }
+    const auto at_pos = stream_name.find('@');
+    if (at_pos == std::string::npos || at_pos == 0) {
+        return;  // 格式异常，丢弃
+    }
+    const std::string symbol      = stream_name.substr(0, at_pos);
+    const std::string stream_type = stream_name.substr(at_pos + 1);
+
+    // Parser 当前接口接受字符串。dump() 多一次序列化反序列化开销，
+    // 性能敏感场景应改为接受 json 引用，见 EXTENSIONS.md
+    const std::string data_str = outer["data"].dump();
+
+    // 用户回调隔离：on_trade_ / on_orderbook_ 是上层注入的 lambda，
+    // 任何抛出的异常都不能冲垮 WebSocket 读线程（否则 std::terminate 进程死）。
+    // 这里吞异常只打日志，让坏掉的一条消息不影响后续数据流。
+    auto safe_invoke = [](auto& cb, auto& payload, const char* tag) {
+        if (!cb) return;
+        try {
+            cb(payload);
+        } catch (const std::exception& e) {
+            std::cerr << "[ConnectionManager] " << tag
+                      << " callback threw: " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "[ConnectionManager] " << tag
+                      << " callback threw unknown exception" << std::endl;
+        }
+    };
+
+    // rfind(prefix, 0) 是判前缀的标准 C++ 写法；starts_with 要 C++20
+    if (stream_type.rfind("trade", 0) == 0) {
+        if (auto t = Parser::parse_trade(data_str)) {
+            safe_invoke(on_trade_, *t, "trade");
+        }
+    } else if (stream_type.rfind("depth", 0) == 0) {
+        if (auto ob = Parser::parse_orderbook(data_str, symbol)) {
+            safe_invoke(on_orderbook_, *ob, "orderbook");
         }
     }
+    // 其他流类型（kline / aggTrade 等）暂未启用，静默忽略
 }
 
 // 指数退避：100ms, 200ms, 400ms, 800ms, ... 最大 30s

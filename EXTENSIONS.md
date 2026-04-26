@@ -28,6 +28,31 @@
   - 记录Ping丢失次数，辅助监控指标
   - 记录连续断线次数，告警
 
+### 3c. HTTP CONNECT 代理增强
+
+- **现状**：支持 `config.json` 里的 `proxy_url` 字段，没配置时 fallback 读 `https_proxy`/`HTTPS_PROXY` 环境变量；
+  解析在 `Config::load()` 里启动单线程完成（绕开 `getenv` 的多线程不安全问题），仅支持 `http://host:port` 格式
+- **不支持**：
+  - 用户名密码：`http://user:pass@host:port`（需要加 `Proxy-Authorization: Basic <b64>` 头）
+  - HTTPS 代理：`https://host:port`（连代理本身要先做一次 TLS）
+  - SOCKS5 代理：协议完全不同，需要单独实现握手
+  - `no_proxy` 黑名单：某些目标想绕过代理直连
+- **生产级方案**：把代理配置抽象为 `ProxyConfig` 类，支持上述全部模式，配置可来自环境变量或 `config.json`
+- **改造点**：在 `WebSocketClient::Impl::connect()` 里加上 auth header 即可解决最常见场景
+
+### 3a. connect() 阻塞期间无法被外部打断 + IPv6 happy-eyeballs
+
+- **现状**：`Impl::connect()` 在持有 `lifecycle_mutex_` 期间调用同步阻塞的
+  `resolver_.resolve()` / `tcp_stream::connect()` / `handshake()`。
+  - `expires_after(10s)` 只对 connect/handshake/read/write 起作用，**对 `resolver_.resolve()` 没用**
+  - 用户 Ctrl+C 时 `disconnect()` 拿不到 `lifecycle_mutex_`，最坏要等 30s+ 的 DNS 超时
+- **当前已处理**：强制 IPv4 解析，避开 WSL2 等环境无 IPv6 路由的"Network unreachable / timeout"问题
+- **生产级方案**：
+  - **happy-eyeballs**：v4/v6 并发 async_resolve + async_connect，谁先成功用谁
+  - **可中断 connect**：把整个握手流程改成 async + io_context，stop() 调用 `ioc_.stop()` 立刻打断
+  - **DNS 自管超时**：用 deadline_timer 给 resolve 加超时
+- **改造点**：把 `Impl::connect()` 整体改成异步链式回调，配合扩展点 #1（全异步模式）一起做
+
 ### 3b. 回调线程安全
 - **现状**：`on_disconnect_` 可能在 read_loop 线程里调用，
   用户若在回调里销毁 client 会自己 join 自己导致死锁
@@ -82,11 +107,17 @@
 
 ---
 
-### 12. Combined Stream 精确 symbol 分发
+### 12. Combined Stream 精确 symbol 分发 [已完成]
 
-- **现状**：depth 消息无 symbol，`on_raw_message` 遍历所有 symbol 逐个尝试（第一个成功即返回），多 symbol 时归属可能错误
-- **生产级**：改用 Binance Combined Stream（`wss://...?streams=btcusdt@depth/ethusdt@trade`），外层有 `{"stream":"btcusdt@depth","data":{...}}`，先取 `stream` 字段直接定位 symbol，精确分发
-- **改造点**：`build_subscribe_msg` 改为 combined stream URL，`on_raw_message` 先路由 stream 再解析
+- **现状**：使用 Binance combined stream 端点（`/stream`），消息外层带 `stream` 字段；`on_raw_message` 从 `stream` 名前缀拿 symbol 再分发到 trade / orderbook
+- **解决了**：之前所有 OrderBook 都被打成第一个 symbol 标签的 bug
+
+### 12a. Parser 接受 json 引用避免重复序列化
+
+- **现状**：`on_raw_message` 收到 `{"stream":..,"data":..}` 后，把 `data` 子对象 `dump()` 成字符串再传给 `Parser::parse_trade/parse_orderbook`；Parser 内部又 `parse()` 一次回 json
+- **代价**：每条消息多一次序列化（dump）+ 一次反序列化（parse），HFT 场景里这是显著浪费
+- **生产级**：让 Parser 接受 `const nlohmann::json&` 入参，直接复用外层已经解析好的对象。或者继续保留 string 版作为兼容入口
+- **改造点**：`Parser::parse_trade(const nlohmann::json&)`、`Parser::parse_orderbook(const nlohmann::json&, std::string_view)` 增加重载
 
 ---
 
@@ -119,6 +150,27 @@
 - **现状**：`TradeReplayer::replay_all` 只按文件顺序最快速度回放全部 Trade
 - **问题**：不能按时间范围过滤，也不能按原始时间间隔或倍速回放
 - **生产级**：结合时间索引快速定位起止位置，并根据 `timestamp_us` 控制回放节奏，支持 1x/10x/最快模式
+
+---
+
+## 缓存层
+
+### 17. 环形缓冲：mutex → lock-free 升级
+
+- **场景定位**：当前 `TradeRingBuffer` 是 **SPMC（1 写 N 读）环形缓冲**——网络线程单写，策略/监控等多个线程并发读快照
+- **现状**：用一把 mutex 保护 push/snapshot/size，正确但每次操作都有 ~50ns 锁开销
+- **问题**：HFT 路径上单条 Trade 处理预算 1µs 级，mutex 在 contention 高时会显著放大延迟
+- **生产级方案**（按复杂度递增）：
+  - **seq-lock**：写者前后各 +1 一个 atomic 序号（奇=写中，偶=稳定）；读者拷贝完检查序号有没有变，变了重读。SPMC 场景天然契合，写者几乎零开销
+  - **RCU / hazard pointer**：高频读+高频写时再考虑，复杂度上一个量级
+- **不适用方案**：SPSC 队列（如 LMAX Disruptor 单段）——它是 1 读 1 写、pop 后消失的语义，无法支持多读者重复读快照
+- **改造点**：保持 `push/snapshot` 接口不变，替换内部实现即可
+
+### 18. 多 symbol 隔离
+
+- **现状**：所有 symbol 共用同一个 `TradeRingBuffer`，"最近 N 条"是混合的
+- **问题**：策略一般按 symbol 查最近 N 条，混合缓冲不够用
+- **生产级**：`unordered_map<string, TradeRingBuffer>`，按 symbol 分桶，避免热门币种淹没冷门币种
 
 ---
 

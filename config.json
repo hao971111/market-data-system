@@ -2,7 +2,7 @@
     "data_sources": [
         {
             "name": "binance_main",
-            "ws_url": "wss://stream.binance.com:9443/ws",
+            "ws_url": "wss://stream.binance.com:9443/stream",
             "priority": 0,
             "enabled": true
         }
@@ -13,5 +13,6 @@
     "reconnect_interval_ms": 100,
     "ping_interval_ms": 1000,
     "pong_timeout_ms": 1000,
+    "proxy_url": "http://192.168.1.5:10808",
     "log_level": 1
 }

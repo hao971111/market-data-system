@@ -9,7 +9,9 @@
 #include <boost/beast/websocket/ssl.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/ssl/context.hpp>
+#include <boost/beast/http.hpp>
 #include <iostream>
+#include <optional>
 #include <regex>
 
 namespace beast = boost::beast;
@@ -40,6 +42,31 @@ struct UrlParts {
     }
 };
 
+// HTTP CONNECT 代理目标
+struct ProxyTarget {
+    std::string host;
+    std::string port;
+};
+
+// 解析代理 URL 字符串。支持格式：http://host:port 或 http://host:port/
+// 空字符串 = 直连（返回 nullopt）
+// 不支持：用户名密码（http://user:pass@host:port）、SOCKS5、HTTPS 代理（连代理本身用 TLS）
+// 这些扩展见 EXTENSIONS.md
+// 注意：proxy_url 由 Config 在启动时读完，运行期间不变；这里不再读 getenv
+// 安全：异常信息绝不回显原始 proxy_url。误填 user:pass@ 这种格式时，凭据会经
+//      on_error_ 进 stderr/日志/监控系统，属于敏感数据泄漏。只描述格式要求即可。
+static std::optional<ProxyTarget> parse_proxy_url(const std::string& proxy_url) {
+    if (proxy_url.empty()) return std::nullopt;
+
+    static const std::regex re(R"(^https?://([^:/]+):(\d+)/?$)");
+    std::smatch m;
+    if (!std::regex_match(proxy_url, m, re)) {
+        throw std::runtime_error(
+            "Invalid proxy_url format (expected http://host:port, no auth/path)");
+    }
+    return ProxyTarget{m[1].str(), m[2].str()};
+}
+
 // Pimpl实现类
 class WebSocketClient::Impl {
 public:
@@ -55,7 +82,8 @@ public:
         if (heartbeat_thread_.joinable()) heartbeat_thread_.join();
     }
     
-    bool connect(const std::string& url, WebSocketClient* owner,
+    bool connect(const std::string& url, const std::string& proxy_url,
+                 WebSocketClient* owner,
                  int ping_interval_ms, int no_data_timeout_ms) {
         owner_ = owner;
         url_parts_ = UrlParts::parse(url);
@@ -68,9 +96,61 @@ public:
             std::lock_guard<std::mutex> lk(lifecycle_mutex_);
             try {
                 beast::get_lowest_layer(ws_).expires_after(std::chrono::seconds(10));
-                
-                auto results = resolver_.resolve(url_parts_.host, url_parts_.port);
-                beast::get_lowest_layer(ws_).connect(results);
+
+                // 代理由 Config 在启动时读完（配置 > 环境变量），传递到这里
+                auto proxy = parse_proxy_url(proxy_url);
+                if (proxy) {
+                    // 走 HTTP CONNECT 隧道：先连代理，再请求建立到目标的 TCP 隧道
+                    std::cout << "[WS] Using HTTP proxy "
+                              << proxy->host << ":" << proxy->port << std::endl;
+
+                    // 整段包 try/catch：CONNECT 任一步失败都要把已经 open 的 socket 关掉，
+                    // 否则 ws_ 复用时下一次 connect() 会撞 already_open，永久无法重连
+                    try {
+                        auto proxy_eps = resolver_.resolve(tcp::v4(), proxy->host, proxy->port);
+                        beast::get_lowest_layer(ws_).connect(proxy_eps);
+
+                        const std::string target = url_parts_.host + ":" + url_parts_.port;
+                        // 用 beast::http 构造 CONNECT 请求并写入 socket
+                        http::request<http::empty_body> conn_req{http::verb::connect, target, 11};
+                        conn_req.set(http::field::host, target);
+                        conn_req.set(http::field::proxy_connection, "keep-alive");
+                        http::write(beast::get_lowest_layer(ws_), conn_req);
+
+                        // 只读 header（CONNECT 200 没 body，server 也不会主动发更多 bytes）
+                        // skip(true) 防止 parser 等 body 永远不返回
+                        beast::flat_buffer buf;
+                        http::response_parser<http::empty_body> parser;
+                        parser.skip(true);
+                        http::read_header(beast::get_lowest_layer(ws_), buf, parser);
+                        const auto& proxy_res = parser.get();
+                        if (proxy_res.result() != http::status::ok) {
+                            throw std::runtime_error("Proxy CONNECT failed: "
+                                + std::to_string(static_cast<unsigned>(proxy_res.result()))
+                                + " " + std::string(proxy_res.reason()));
+                        }
+
+                        // 隧道字节边界检查：read_header 基于 read_some，可能把 \r\n\r\n
+                        // 之后的字节也拉进 buf。这些字节本应是 TLS 流的开头，但 SSL
+                        // handshake 不会消费 buf，会导致 TLS 第一字节错位 -> 神秘的
+                        // "wrong version number" 报错。早抛清晰错误比让 TLS 自己报强。
+                        // RFC 7231：CONNECT 200 响应没有 body，正常代理不会有残留字节
+                        if (buf.size() != 0) {
+                            throw std::runtime_error("Proxy returned "
+                                + std::to_string(buf.size())
+                                + " unexpected bytes after CONNECT response");
+                        }
+                    } catch (...) {
+                        beast::error_code ec;
+                        beast::get_lowest_layer(ws_).socket().close(ec);
+                        throw;  // 让外层 catch (const std::exception&) 走 on_error_ 回调
+                    }
+                } else {
+                    // 直连：强制 IPv4 解析（WSL2 NAT 模式无出站 IPv6 路由）
+                    auto results = resolver_.resolve(
+                        tcp::v4(), url_parts_.host, url_parts_.port);
+                    beast::get_lowest_layer(ws_).connect(results);
+                }
                 
                 if (!SSL_set_tlsext_host_name(ws_.next_layer().native_handle(), 
                                               url_parts_.host.c_str())) {
@@ -263,9 +343,10 @@ WebSocketClient::~WebSocketClient() {
 }
 
 bool WebSocketClient::connect(const std::string& url,
+                              const std::string& proxy_url,
                               int ping_interval_ms,
                               int no_data_timeout_ms) {
-    if (impl_->connect(url, this, ping_interval_ms, no_data_timeout_ms)) {
+    if (impl_->connect(url, proxy_url, this, ping_interval_ms, no_data_timeout_ms)) {
         connected_ = true;
         return true;
     }

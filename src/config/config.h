@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <cstdlib>
 #include <stdexcept>
 #include <nlohmann/json.hpp>
 
@@ -20,7 +21,7 @@ struct Config {
     // 数据源配置（架构支持多源，当前用单源）
     // 后续可扩展为双活模式：多源同时收数据，去重合并
     std::vector<DataSourceConfig> data_sources = {
-        {"binance_main", "wss://stream.binance.com:9443/ws", 0, true},
+        {"binance_main", "wss://stream.binance.com:9443/stream", 0, true},
         // {"binance_backup", "wss://stream.binance.com:443/ws", 1, false},  // 备用，暂不启用
     };
     
@@ -36,6 +37,11 @@ struct Config {
     // 连接配置
     int reconnect_interval_ms = 100;   // 初始重连间隔100ms，指数退避
     int max_reconnect_attempts = 0;    // 0表示无限重试
+    
+    // HTTP CONNECT 代理 URL，格式 http://host:port
+    // 空 = 直连。优先级：config.json["proxy_url"] > 环境变量 https_proxy/HTTPS_PROXY
+    // 在 load() 里启动单线程读完，运行期间只读不写——绕开 getenv() 多线程不安全的坑
+    std::string proxy_url;
     
     // 心跳检测配置
     // 场景：交易所行情订阅，正常情况下数据每秒几十条
@@ -76,7 +82,30 @@ struct Config {
             data_dir = j["data_dir"].get<std::string>();
         }
         if (j.contains("ring_buffer_size")) {
-            ring_buffer_size = j["ring_buffer_size"].get<size_t>();
+            // 上限 1e8（按 sizeof(Trade) ≈ 56B 估算约 5.6GB），挡住误配
+            constexpr int64_t kMaxRingBufferSize = 100'000'000;
+            const auto& v = j["ring_buffer_size"];
+
+            // 1) 类型必须是整数（避免 get<int64_t>() 抛出不含字段名的 type_error）
+            if (!v.is_number_integer()) {
+                throw std::invalid_argument(
+                    "Config invalid ring_buffer_size: must be integer");
+            }
+            // 2) 大于 INT64_MAX 的 unsigned 数会被截断成负数，先按 uint64 拦截
+            if (v.is_number_unsigned() &&
+                v.get<uint64_t>() > static_cast<uint64_t>(kMaxRingBufferSize)) {
+                throw std::invalid_argument(
+                    "Config invalid ring_buffer_size=" + std::to_string(v.get<uint64_t>()) +
+                    " (must be 1.." + std::to_string(kMaxRingBufferSize) + ")");
+            }
+            // 3) 走到这里 raw 一定能如实反映用户原值（不会被截断）
+            const auto raw = v.get<int64_t>();
+            if (raw <= 0 || raw > kMaxRingBufferSize) {
+                throw std::invalid_argument(
+                    "Config invalid ring_buffer_size=" + std::to_string(raw) +
+                    " (must be 1.." + std::to_string(kMaxRingBufferSize) + ")");
+            }
+            ring_buffer_size = static_cast<size_t>(raw);
         }
         if (j.contains("reconnect_interval_ms")) {
             reconnect_interval_ms = j["reconnect_interval_ms"].get<int>();
@@ -90,7 +119,25 @@ struct Config {
         if (j.contains("log_level")) {
             log_level = j["log_level"].get<int>();
         }
-        
+
+        // 代理：配置文件优先，没配置则 fallback 到环境变量
+        // 注意 contains 区分"key 不存在"和"key 存在值为空"——
+        //   显式写 "proxy_url": "" 表示用户主动声明"不要代理"，即使有环境变量也不走
+        //   "proxy_url": null 走下面的类型校验抛错（与 ring_buffer_size 风格一致）
+        if (j.contains("proxy_url")) {
+            const auto& v = j["proxy_url"];
+            // 类型校验：与同文件 ring_buffer_size 风格对齐，错误信息带字段名便于排查
+            // nlohmann 自带的 get<std::string>() 抛 type_error 不含字段名，用户难定位
+            if (!v.is_string()) {
+                throw std::invalid_argument("Config invalid proxy_url: must be string");
+            }
+            proxy_url = v.get<std::string>();
+        } else {
+            const char* env = std::getenv("https_proxy");
+            if (!env || *env == '\0') env = std::getenv("HTTPS_PROXY");
+            if (env && *env != '\0') proxy_url = env;
+        }
+
         // 数据源配置
         if (j.contains("data_sources")) {
             data_sources.clear();
