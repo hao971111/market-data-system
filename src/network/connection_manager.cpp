@@ -6,8 +6,8 @@
 
 namespace mds {
 
-ConnectionManager::ConnectionManager(const Config& config) 
-    : config_(config) {}
+ConnectionManager::ConnectionManager(const Config& config, Metrics& metrics)
+    : config_(config), metrics_(metrics) {}
 
 ConnectionManager::~ConnectionManager() {
     stop();
@@ -68,11 +68,16 @@ void ConnectionManager::reconnect_loop(const std::string& url) {
         std::cout << "[ConnectionManager] Connecting (attempt " 
                   << attempt + 1 << ")..." << std::endl;
 
+        // 监控：记录每一次尝试（包括失败）。relaxed 即可——这里不参与同步，
+        // 只是给 reporter 读取做趋势分析。
+        metrics_.connect_attempts.fetch_add(1, std::memory_order_relaxed);
+
         bool ok = client_->connect(url, config_.proxy_url,
                                    config_.ping_interval_ms, config_.no_data_timeout_ms);
 
         if (ok) {
             std::cout << "[ConnectionManager] Connected." << std::endl;
+            metrics_.connect_successes.fetch_add(1, std::memory_order_relaxed);
             attempt = 0;
             need_reconnect_ = false;
             
@@ -147,16 +152,22 @@ std::string ConnectionManager::build_subscribe_msg(
 //   3) 按 @后缀 区分流类型，分发到 trade / orderbook 解析器
 //   4) 订阅 ack 等控制消息没有 stream 字段，直接丢弃（不算错误）
 void ConnectionManager::on_raw_message(const std::string& msg) {
+    // 监控：每条入站消息（含控制消息）都计入。reporter 用 delta 算 msgs/s
+    metrics_.msgs_recv.fetch_add(1, std::memory_order_relaxed);
+
     nlohmann::json outer;
     try {
         outer = nlohmann::json::parse(msg);
     } catch (const nlohmann::json::exception& e) {
+        // 外层 JSON 解析失败：外层都坏了基本就是协议异常，计 parse_error
+        metrics_.parse_errors.fetch_add(1, std::memory_order_relaxed);
         std::cerr << "[ConnectionManager] outer JSON parse error: "
                   << e.what() << std::endl;
         return;
     }
 
     // 控制消息（订阅 ack: {"result":null,"id":1}）没有 stream/data 字段，正常忽略
+    // 注意：这条不算 parse_error——它是合法的控制帧
     if (!outer.contains("stream") || !outer.contains("data")) {
         return;
     }
@@ -167,10 +178,12 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
     try {
         stream_name = outer["stream"].get<std::string>();
     } catch (const nlohmann::json::exception&) {
+        metrics_.parse_errors.fetch_add(1, std::memory_order_relaxed);
         return;  // stream 字段类型不对，丢弃
     }
     const auto at_pos = stream_name.find('@');
     if (at_pos == std::string::npos || at_pos == 0) {
+        metrics_.parse_errors.fetch_add(1, std::memory_order_relaxed);
         return;  // 格式异常，丢弃
     }
     const std::string symbol      = stream_name.substr(0, at_pos);
@@ -182,15 +195,19 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
 
     // 用户回调隔离：on_trade_ / on_orderbook_ 是上层注入的 lambda，
     // 任何抛出的异常都不能冲垮 WebSocket 读线程（否则 std::terminate 进程死）。
-    // 这里吞异常只打日志，让坏掉的一条消息不影响后续数据流。
-    auto safe_invoke = [](auto& cb, auto& payload, const char* tag) {
+    // safe_invoke 把异常吞进 callback_errors 计数器，让坏的一条不影响后续。
+    // 把 metrics 一起传进 lambda（捕获 &，但避免 [&] 捕获太多东西）
+    Metrics& metrics = metrics_;
+    auto safe_invoke = [&metrics](auto& cb, auto& payload, const char* tag) {
         if (!cb) return;
         try {
             cb(payload);
         } catch (const std::exception& e) {
+            metrics.callback_errors.fetch_add(1, std::memory_order_relaxed);
             std::cerr << "[ConnectionManager] " << tag
                       << " callback threw: " << e.what() << std::endl;
         } catch (...) {
+            metrics.callback_errors.fetch_add(1, std::memory_order_relaxed);
             std::cerr << "[ConnectionManager] " << tag
                       << " callback threw unknown exception" << std::endl;
         }
@@ -199,14 +216,21 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
     // rfind(prefix, 0) 是判前缀的标准 C++ 写法；starts_with 要 C++20
     if (stream_type.rfind("trade", 0) == 0) {
         if (auto t = Parser::parse_trade(data_str)) {
+            metrics_.trades_parsed.fetch_add(1, std::memory_order_relaxed);
             safe_invoke(on_trade_, *t, "trade");
+        } else {
+            // 业务字段缺失/格式错：parse_trade 返回 nullopt
+            metrics_.parse_errors.fetch_add(1, std::memory_order_relaxed);
         }
     } else if (stream_type.rfind("depth", 0) == 0) {
         if (auto ob = Parser::parse_orderbook(data_str, symbol)) {
+            metrics_.orderbooks_parsed.fetch_add(1, std::memory_order_relaxed);
             safe_invoke(on_orderbook_, *ob, "orderbook");
+        } else {
+            metrics_.parse_errors.fetch_add(1, std::memory_order_relaxed);
         }
     }
-    // 其他流类型（kline / aggTrade 等）暂未启用，静默忽略
+    // 其他流类型（kline / aggTrade 等）暂未启用，静默忽略（不计 error）
 }
 
 // 指数退避：100ms, 200ms, 400ms, 800ms, ... 最大 30s

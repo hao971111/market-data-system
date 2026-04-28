@@ -125,9 +125,9 @@
 
 ### 13. 写盘线程模型
 
-- **现状**：`BinaryTradeWriter::write` 只把 `Trade` 放入有界队列，后台写盘线程批量写入 `trades.bin`
-- **问题**：当前队列是 `std::deque + mutex`，队列满时直接返回失败；还没有暴露队列积压、写入延迟、丢弃计数等运行时指标
-- **生产级**：替换为无锁/低锁 SPSC 队列，批量写入策略可配置，并把队列深度、写入耗时、丢弃数量接入监控
+- **现状**：`BinaryRecordWriter<Record, Header>` 把 Trade / OrderBook 放入有界队列，后台写盘线程分别写入 `trades.bin` / `orderbooks.bin`
+- **问题**：当前队列是 `std::deque + mutex`，队列满时直接返回失败；已经暴露写入数、丢弃数和错误标志，但还没有暴露队列深度和写入延迟
+- **生产级**：替换为无锁/低锁 SPSC 队列，批量写入策略可配置，并把队列深度、写入耗时接入监控
 
 ### 14. 文件切分与索引
 
@@ -171,6 +171,12 @@
 - **现状**：所有 symbol 共用同一个 `TradeRingBuffer`，"最近 N 条"是混合的
 - **问题**：策略一般按 symbol 查最近 N 条，混合缓冲不够用
 - **生产级**：`unordered_map<string, TradeRingBuffer>`，按 symbol 分桶，避免热门币种淹没冷门币种
+
+### 19. Trade / OrderBook 缓冲容量拆分
+
+- **现状**：`TradeRingBuffer` 和 `OrderBookRingBuffer` 都复用 `config.ring_buffer_size`
+- **问题**：`OrderBookSnapshot` 比 `Trade` 大得多（664B vs 56B），相同条数会占用更多内存
+- **生产级**：配置拆成 `trade_ring_buffer_size` 和 `orderbook_ring_buffer_size`，并按 symbol / 更新频率估算容量
 
 ---
 

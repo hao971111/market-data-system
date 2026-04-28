@@ -6,6 +6,7 @@
 
 namespace mds {
 
-using BinaryTradeReader = BinaryRecordReader<Trade, TradeFileHeader>;
+using BinaryOrderBookReader =
+    BinaryRecordReader<OrderBookSnapshot, OrderBookFileHeader>;
 
 }  // namespace mds

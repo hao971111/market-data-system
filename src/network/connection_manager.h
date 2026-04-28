@@ -3,6 +3,7 @@
 #include "websocket_client.h"
 #include "../config/config.h"
 #include "../common/types.h"
+#include "../monitor/metrics.h"
 #include <functional>
 #include <atomic>
 #include <thread>
@@ -21,7 +22,8 @@ using OrderBookCallback = std::function<void(const OrderBookSnapshot&)>;
 //   - 解析原始 JSON，分发给上层（屏蔽协议细节）
 class ConnectionManager {
 public:
-    explicit ConnectionManager(const Config& config);
+    // metrics 由 main 持有，按引用注入。生命周期必须长于 ConnectionManager。
+    ConnectionManager(const Config& config, Metrics& metrics);
     ~ConnectionManager();
 
     void start(const std::string& url);
@@ -37,6 +39,7 @@ private:
     std::string build_subscribe_msg(const std::vector<std::string>& symbols) const;
 
     const Config& config_;
+    Metrics&      metrics_;   // 引用，外部持有；只 inc 不 reset
     TradeCallback     on_trade_;
     OrderBookCallback on_orderbook_;
     
