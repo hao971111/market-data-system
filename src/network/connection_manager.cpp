@@ -1,5 +1,6 @@
 #include "connection_manager.h"
 #include "../parser/parser.h"
+#include <chrono>
 #include <iostream>
 #include <algorithm>
 #include <nlohmann/json.hpp>
@@ -216,6 +217,17 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
     // rfind(prefix, 0) 是判前缀的标准 C++ 写法；starts_with 要 C++20
     if (stream_type.rfind("trade", 0) == 0) {
         if (auto t = Parser::parse_trade(data_str)) {
+            // 端到端延迟：本机时间 - 交易所时间戳。
+            // 用 system_clock 不用 steady_clock：因为 trade.timestamp_us 也是
+            // wall-clock 微秒（来自 binance），两边口径必须一致。
+            // 时钟不同步可能让差值为负，丢弃即可——record 接 uint64_t，
+            // 这里强转 negative 会变成天文数字、把 max 顶到爆，必须先挡住。
+            const auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            const int64_t lat_us = now_us - t->timestamp_us;
+            if (lat_us >= 0) {
+                metrics_.trade_latency.record(static_cast<uint64_t>(lat_us));
+            }
             metrics_.trades_parsed.fetch_add(1, std::memory_order_relaxed);
             safe_invoke(on_trade_, *t, "trade");
         } else {

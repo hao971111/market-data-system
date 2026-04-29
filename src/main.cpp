@@ -12,6 +12,7 @@
 #include <csignal>
 #include <cstdint>
 #include <iostream>
+#include <mutex>
 #include <string_view>
 #include <thread>
 
@@ -27,6 +28,7 @@
 
 std::atomic<bool> g_running{true};
 std::atomic<int>  g_signal{0};
+std::mutex        g_console_mutex;
 
 // signal_handler 必须 async-signal-safe：只允许 lock-free atomic 操作。
 // 之前用 std::cout 是 UB（信号在主线程持 cout 锁时打断 → 同线程二次加锁）。
@@ -40,7 +42,10 @@ void signal_handler(int signum) {
 //
 // 退出拆成 10 次 100ms 小睡眠，避免关机时最多卡 1 秒。
 // 不在 signal_handler 里 notify cv，因为那不是 async-signal-safe。
-void reporter_loop(const mds::Metrics& metrics,
+// 注意：metrics 是非 const 引用——LatencyHistogram::snapshot_and_reset()
+// 会清零所有桶（这是设计：每秒拿到的是"上一秒的分位数"，不是累计直方图）。
+// 其他普通 atomic 计数器仍按 load() 读取，行为不变。
+void reporter_loop(mds::Metrics& metrics,
                    const mds::BinaryTradeWriter& trade_writer,
                    const mds::BinaryOrderBookWriter& orderbook_writer) {
     uint64_t prev_msgs = 0, prev_trades = 0, prev_books = 0;
@@ -66,26 +71,44 @@ void reporter_loop(const mds::Metrics& metrics,
         const uint64_t book_written  = orderbook_writer.records_written();
         const uint64_t book_dropped  = orderbook_writer.records_dropped();
 
-        std::cout << "[METRICS]"
-                  << " msgs/s=" << (msgs - prev_msgs)
-                  << " trades/s=" << (trades - prev_trades)
-                  << " books/s=" << (books - prev_books)
-                  << " trade_written/s=" << (trade_written - prev_trade_written)
-                  << " trade_dropped/s=" << (trade_dropped - prev_trade_dropped)
-                  << " book_written/s=" << (book_written - prev_book_written)
-                  << " book_dropped/s=" << (book_dropped - prev_book_dropped)
-                  << " parse_err/s=" << (pe - prev_parse_err)
-                  << " cb_err/s=" << (ce - prev_cb_err)
-                  << " | conn=" << conn_ok << "/" << conn_at
-                  << " trade_writer_error=" << (trade_writer.has_error() ? "yes" : "no")
-                  << " book_writer_error=" << (orderbook_writer.has_error() ? "yes" : "no")
-                  << " | total: msgs=" << msgs
-                  << " trades=" << trades << " books=" << books
-                  << " trade_written=" << trade_written
-                  << " trade_dropped=" << trade_dropped
-                  << " book_written=" << book_written
-                  << " book_dropped=" << book_dropped
-                  << std::endl;
+        // 取一次 trade 端到端延迟分位数（顺带清零桶，下一秒重新统计）
+        const auto trade_lat = metrics.trade_latency.snapshot_and_reset();
+
+        {
+            std::lock_guard<std::mutex> lock(g_console_mutex);
+            std::cout << "[METRICS]"
+                      << " msgs/s=" << (msgs - prev_msgs)
+                      << " trades/s=" << (trades - prev_trades)
+                      << " books/s=" << (books - prev_books)
+                      << " trade_written/s=" << (trade_written - prev_trade_written)
+                      << " trade_dropped/s=" << (trade_dropped - prev_trade_dropped)
+                      << " book_written/s=" << (book_written - prev_book_written)
+                      << " book_dropped/s=" << (book_dropped - prev_book_dropped)
+                      << " parse_err/s=" << (pe - prev_parse_err)
+                      << " cb_err/s=" << (ce - prev_cb_err)
+                      << " | conn=" << conn_ok << "/" << conn_at
+                      << " trade_writer_error=" << (trade_writer.has_error() ? "yes" : "no")
+                      << " book_writer_error=" << (orderbook_writer.has_error() ? "yes" : "no")
+                      << " | total: msgs=" << msgs
+                      << " trades=" << trades << " books=" << books
+                      << " trade_written=" << trade_written
+                      << " trade_dropped=" << trade_dropped
+                      << " book_written=" << book_written
+                      << " book_dropped=" << book_dropped
+                      << std::endl;
+        }
+
+        // 单独一行延迟分位数：count=0 时跳过（reporter 启动后第一秒可能没数据）
+        if (trade_lat.count > 0) {
+            std::lock_guard<std::mutex> lock(g_console_mutex);
+            std::cout << "[LATENCY] trade"
+                      << " count=" << trade_lat.count
+                      << " p50="   << trade_lat.p50_us << "us"
+                      << " p95="   << trade_lat.p95_us << "us"
+                      << " p99="   << trade_lat.p99_us << "us"
+                      << " max="   << trade_lat.max_us << "us"
+                      << std::endl;
+        }
 
         prev_msgs = msgs;
         prev_trades = trades;
@@ -135,31 +158,55 @@ int run_live(const mds::Config& config) {
 
     mds::ConnectionManager mgr(config, metrics);
 
-    mgr.set_trade_callback([&trade_writer, &trade_cache](const mds::Trade& t) {
+    // live 明细日志采样：前几条全打，之后每 N 条打一条。
+    // 这样保留肉眼 sanity check，又不会把每秒一条的 METRICS/LATENCY 淹没。
+    constexpr uint64_t LIVE_TRADE_PRINT_EVERY = 1000;
+    constexpr uint64_t LIVE_BOOK_PRINT_EVERY  = 1000;
+    constexpr uint64_t LIVE_HEAD_SAMPLE       = 5;
+    std::atomic<uint64_t> live_trade_print_count{0};
+    std::atomic<uint64_t> live_book_print_count{0};
+
+    mgr.set_trade_callback([&trade_writer, &trade_cache,
+                            &live_trade_print_count](const mds::Trade& t) {
         trade_cache.push(t);
         if (!trade_writer.write(t)) {
             std::cerr << "[ERROR] Failed to write trade" << std::endl;
         }
-        std::cout << "[TRADE] " << t.symbol
-                  << " price=" << t.price
-                  << " qty=" << t.quantity << std::endl;
+
+        const uint64_t n = live_trade_print_count.fetch_add(
+            1, std::memory_order_relaxed) + 1;
+        if (n <= LIVE_HEAD_SAMPLE || n % LIVE_TRADE_PRINT_EVERY == 0) {
+            std::lock_guard<std::mutex> lock(g_console_mutex);
+            std::cout << "[TRADE] #" << n << " " << t.symbol
+                      << " price=" << t.price
+                      << " qty=" << t.quantity << std::endl;
+        }
     });
 
-    mgr.set_orderbook_callback([&orderbook_cache, &orderbook_writer](
+    mgr.set_orderbook_callback([&orderbook_cache, &orderbook_writer,
+                                &live_book_print_count](
                                    const mds::OrderBookSnapshot& ob) {
         orderbook_cache.push(ob);
         if (!orderbook_writer.write(ob)) {
             std::cerr << "[ERROR] Failed to write orderbook" << std::endl;
         }
-        std::cout << "[BOOK]  " << ob.symbol
-                  << " bid=" << ob.best_bid_price()
-                  << " ask=" << ob.best_ask_price()
-                  << " spread=" << ob.spread() << std::endl;
+
+        const uint64_t n = live_book_print_count.fetch_add(
+            1, std::memory_order_relaxed) + 1;
+        if (n <= LIVE_HEAD_SAMPLE || n % LIVE_BOOK_PRINT_EVERY == 0) {
+            std::lock_guard<std::mutex> lock(g_console_mutex);
+            std::cout << "[BOOK]  #" << n << " " << ob.symbol
+                      << " bid=" << ob.best_bid_price()
+                      << " ask=" << ob.best_ask_price()
+                      << " spread=" << ob.spread() << std::endl;
+        }
     });
 
     mgr.start(source.ws_url);
 
-    std::thread reporter_thread(reporter_loop, std::cref(metrics),
+    // metrics 用 std::ref（非 const）：reporter 需要 snapshot_and_reset
+    // 把延迟桶清零；其余两个 writer 仍是只读 cref。
+    std::thread reporter_thread(reporter_loop, std::ref(metrics),
                                 std::cref(trade_writer), std::cref(orderbook_writer));
 
     while (g_running) {

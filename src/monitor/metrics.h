@@ -3,6 +3,8 @@
 #include <atomic>
 #include <cstdint>
 
+#include "latency_histogram.h"
+
 namespace mds {
 
 // 系统运行时指标（线程安全计数器集合）
@@ -34,6 +36,13 @@ struct Metrics {
 
     // 业务回调层
     std::atomic<uint64_t> callback_errors{0};   // 用户回调抛异常被 safe_invoke 接住的次数
+
+    // 端到端延迟（交易所时间戳 → 本地回调到达）
+    // 口径：trade.timestamp_us 是 binance 服务端发出时刻（wall-clock 微秒）
+    //       我们本地用 system_clock 的 us 作差。含网络往返 + 本地解析。
+    // 注意：OrderBook depth 流不带交易所时间戳，timestamp_us 是 parser 在本地打的，
+    //       算延迟近似 0 没意义，所以本版本只测 trade。
+    LatencyHistogram trade_latency;
 
     // 禁拷贝（atomic 本身不可拷贝；显式声明让出错信息更清晰）
     Metrics() = default;
