@@ -73,7 +73,16 @@ std::optional<OrderBookSnapshot> Parser::parse_orderbook(const std::string& json
                                                           std::string_view symbol) {
     try {
         auto j = nlohmann::json::parse(json_str);
+        return parse_orderbook(j, symbol);
+    } catch (const std::exception& e) {
+        std::cerr << "[Parser] OrderBook parse error: " << e.what() << std::endl;
+        return std::nullopt;
+    }
+}
 
+std::optional<OrderBookSnapshot> Parser::parse_orderbook(const nlohmann::json& j,
+                                                          std::string_view symbol) {
+    try {
         if (!j.contains("bids") || !j.contains("asks")) {
             return std::nullopt;
         }
@@ -83,17 +92,40 @@ std::optional<OrderBookSnapshot> Parser::parse_orderbook(const std::string& json
             std::chrono::system_clock::now().time_since_epoch()).count();
         snap.set_symbol(symbol);
 
-        // 解析买卖盘，最多取 ORDERBOOK_DEPTH 档
         auto parse_levels = [](const nlohmann::json& arr, OrderBookLevel* levels) {
-            int count = std::min((int)arr.size(), ORDERBOOK_DEPTH);
-            for (int i = 0; i < count; i++) {
-                levels[i].price    = std::stod(arr[i][0].get<std::string>());
-                levels[i].quantity = std::stod(arr[i][1].get<std::string>());
+            if (!arr.is_array()) {
+                return false;
             }
+            auto parse_double = [](const std::string& text, double& out) {
+                size_t pos = 0;
+                out = std::stod(text, &pos);
+                return pos == text.size();
+            };
+            const auto count = std::min(arr.size(), static_cast<size_t>(ORDERBOOK_DEPTH));
+            for (size_t i = 0; i < count; i++) {
+                const auto& level = arr[i];
+                if (!level.is_array() || level.size() < 2) {
+                    return false;
+                }
+                if (!level[0].is_string() || !level[1].is_string()) {
+                    return false;
+                }
+                try {
+                    if (!parse_double(level[0].get_ref<const std::string&>(), levels[i].price) ||
+                        !parse_double(level[1].get_ref<const std::string&>(), levels[i].quantity)) {
+                        return false;
+                    }
+                } catch (const std::exception&) {
+                    return false;
+                }
+            }
+            return true;
         };
 
-        parse_levels(j["bids"], snap.bids);
-        parse_levels(j["asks"], snap.asks);
+        if (!parse_levels(j["bids"], snap.bids) ||
+            !parse_levels(j["asks"], snap.asks)) {
+            return std::nullopt;
+        }
 
         return snap;
 

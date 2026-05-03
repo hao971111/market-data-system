@@ -71,8 +71,11 @@ void reporter_loop(mds::Metrics& metrics,
         const uint64_t book_written  = orderbook_writer.records_written();
         const uint64_t book_dropped  = orderbook_writer.records_dropped();
 
-        // 取一次 trade 端到端延迟分位数（顺带清零桶，下一秒重新统计）
+        // 取一次延迟分位数（顺带清零桶，下一秒重新统计）。
+        // EXT：交易所时间戳 -> 本机回调到达，包含公网/代理。
+        // INT：on_raw_message 进入 -> 函数退出，只看本进程内部处理。
         const auto trade_lat = metrics.trade_latency.snapshot_and_reset();
+        const auto pipeline_lat = metrics.pipeline_latency.snapshot_and_reset();
 
         {
             std::lock_guard<std::mutex> lock(g_console_mutex);
@@ -98,15 +101,25 @@ void reporter_loop(mds::Metrics& metrics,
                       << std::endl;
         }
 
-        // 单独一行延迟分位数：count=0 时跳过（reporter 启动后第一秒可能没数据）
-        if (trade_lat.count > 0) {
+        // 延迟分位数每秒固定打印，count=0 也保留，避免观察时出现“缺行”误解。
+        {
             std::lock_guard<std::mutex> lock(g_console_mutex);
-            std::cout << "[LATENCY] trade"
+            std::cout << "[LATENCY_EXT] trade"
                       << " count=" << trade_lat.count
                       << " p50="   << trade_lat.p50_us << "us"
                       << " p95="   << trade_lat.p95_us << "us"
                       << " p99="   << trade_lat.p99_us << "us"
                       << " max="   << trade_lat.max_us << "us"
+                      << std::endl;
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_console_mutex);
+            std::cout << "[LATENCY_INT] pipeline"
+                      << " count=" << pipeline_lat.count
+                      << " p50="   << pipeline_lat.p50_us << "us"
+                      << " p95="   << pipeline_lat.p95_us << "us"
+                      << " p99="   << pipeline_lat.p99_us << "us"
+                      << " max="   << pipeline_lat.max_us << "us"
                       << std::endl;
         }
 

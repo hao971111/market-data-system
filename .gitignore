@@ -1,5 +1,6 @@
 # 编译产物
 build/
+build-perf/
 
 # 数据文件（运行时生成，不提交）
 data/

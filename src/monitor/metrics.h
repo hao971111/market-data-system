@@ -44,6 +44,11 @@ struct Metrics {
     //       算延迟近似 0 没意义，所以本版本只测 trade。
     LatencyHistogram trade_latency;
 
+    // 内部处理延迟（on_raw_message 进入 → 函数退出）
+    // 口径：使用 steady_clock，只衡量本进程内部的 JSON 解析、结构体解析、
+    //       callback 分发和入队写盘等耗时，不包含交易所/公网/代理/NTP 影响。
+    LatencyHistogram pipeline_latency;
+
     // 禁拷贝（atomic 本身不可拷贝；显式声明让出错信息更清晰）
     Metrics() = default;
     Metrics(const Metrics&) = delete;

@@ -3,6 +3,7 @@
 #include "../common/types.h"
 #include <string>
 #include <optional>
+#include <nlohmann/json_fwd.hpp>
 
 namespace mds {
 
@@ -16,6 +17,8 @@ public:
 
     // 解析 OrderBook 深度消息
     static std::optional<OrderBookSnapshot> parse_orderbook(const std::string& json,
+                                                             std::string_view symbol);
+    static std::optional<OrderBookSnapshot> parse_orderbook(const nlohmann::json& json,
                                                              std::string_view symbol);
 };
 

@@ -7,6 +7,32 @@
 
 namespace mds {
 
+namespace {
+
+class PipelineLatencyRecorder {
+public:
+    explicit PipelineLatencyRecorder(LatencyHistogram& histogram)
+        : histogram_(histogram), start_(std::chrono::steady_clock::now()) {}
+
+    ~PipelineLatencyRecorder() {
+        const auto end = std::chrono::steady_clock::now();
+        const auto lat_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            end - start_).count();
+        if (lat_us >= 0) {
+            histogram_.record(static_cast<uint64_t>(lat_us));
+        }
+    }
+
+    PipelineLatencyRecorder(const PipelineLatencyRecorder&) = delete;
+    PipelineLatencyRecorder& operator=(const PipelineLatencyRecorder&) = delete;
+
+private:
+    LatencyHistogram& histogram_;
+    std::chrono::steady_clock::time_point start_;
+};
+
+}  // namespace
+
 ConnectionManager::ConnectionManager(const Config& config, Metrics& metrics)
     : config_(config), metrics_(metrics) {}
 
@@ -153,6 +179,10 @@ std::string ConnectionManager::build_subscribe_msg(
 //   3) 按 @后缀 区分流类型，分发到 trade / orderbook 解析器
 //   4) 订阅 ack 等控制消息没有 stream 字段，直接丢弃（不算错误）
 void ConnectionManager::on_raw_message(const std::string& msg) {
+    // 内部处理延迟：从 on_raw_message 进入到函数退出。
+    // RAII 保证 parse error / control ack / trade / orderbook 等所有返回路径都记录。
+    PipelineLatencyRecorder pipeline_timer(metrics_.pipeline_latency);
+
     // 监控：每条入站消息（含控制消息）都计入。reporter 用 delta 算 msgs/s
     metrics_.msgs_recv.fetch_add(1, std::memory_order_relaxed);
 
@@ -190,10 +220,6 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
     const std::string symbol      = stream_name.substr(0, at_pos);
     const std::string stream_type = stream_name.substr(at_pos + 1);
 
-    // Parser 当前接口接受字符串。dump() 多一次序列化反序列化开销，
-    // 性能敏感场景应改为接受 json 引用，见 EXTENSIONS.md
-    const std::string data_str = outer["data"].dump();
-
     // 用户回调隔离：on_trade_ / on_orderbook_ 是上层注入的 lambda，
     // 任何抛出的异常都不能冲垮 WebSocket 读线程（否则 std::terminate 进程死）。
     // safe_invoke 把异常吞进 callback_errors 计数器，让坏的一条不影响后续。
@@ -216,6 +242,7 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
 
     // rfind(prefix, 0) 是判前缀的标准 C++ 写法；starts_with 要 C++20
     if (stream_type.rfind("trade", 0) == 0) {
+        const std::string data_str = outer["data"].dump();
         if (auto t = Parser::parse_trade(data_str)) {
             // 端到端延迟：本机时间 - 交易所时间戳。
             // 用 system_clock 不用 steady_clock：因为 trade.timestamp_us 也是
@@ -235,7 +262,7 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
             metrics_.parse_errors.fetch_add(1, std::memory_order_relaxed);
         }
     } else if (stream_type.rfind("depth", 0) == 0) {
-        if (auto ob = Parser::parse_orderbook(data_str, symbol)) {
+        if (auto ob = Parser::parse_orderbook(outer["data"], symbol)) {
             metrics_.orderbooks_parsed.fetch_add(1, std::memory_order_relaxed);
             safe_invoke(on_orderbook_, *ob, "orderbook");
         } else {

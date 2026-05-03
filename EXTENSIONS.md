@@ -180,7 +180,28 @@
 
 ---
 
-## 监控层（待开发时补充）
+## 监控层
+
+### 20. 交易所时间校准与外部延迟口径
+
+- **现状**：`LATENCY_EXT` 使用 `local system_clock now - trade.timestamp_us` 计算外部端到端延迟；如果本机时间落后交易所时间，样本会出现负值并被丢弃。
+- **问题**：WSL / 本机 NTP / 代理请求耗时都会影响本机时间与交易所时间的对齐，导致 `LATENCY_EXT count=0` 或外部延迟被高估/低估。
+- **生产级**：启动时定期请求交易所 server time，用 NTP 风格中点估算 `exchange_time_offset_us = server_time - ((local_send_time + local_recv_time) / 2)`；计算外部延迟时使用 `adjusted_local_now = local_now + offset`，并记录 offset、负延迟丢弃数、校准请求 RTT。RTT 过大或抖动过大时，该次校准可信度较低，应丢弃或降低权重。
+- **注意**：内部处理延迟 `LATENCY_INT` 使用 `steady_clock`，不受交易所时间校准影响，仍作为本进程性能优化的主要指标。
+
+### 21. 统一日志入口与 spdlog 替换
+
+- **现状**：项目内仍有多处直接 `std::cout/std::cerr` 输出；`main` 层部分日志已用 `g_console_mutex` 避免交错，但 network / websocket / callback 等路径尚未统一到同一日志入口。
+- **问题**：
+  - 多线程日志仍可能交错，影响可读性和问题定位效率
+  - 日志等级、输出格式、输出目标（console/file）不统一
+  - 高日志量场景下，直接流式输出可能增加业务线程阻塞风险
+- **生产级**：抽象统一日志接口（例如 `log_info/log_warn/log_error`），后端替换为 `spdlog`（优先异步模式），支持：
+  - 等级过滤（debug/info/warn/error）
+  - 多 sink 分流（控制台简洁 + 文件详细）
+  - 文件滚动（按大小/时间）
+  - 统一格式（时间、线程号、模块名）
+- **落地策略**：先引入日志包装层并逐步替换 `cout/cerr`，确认行为一致后再切异步和滚动策略，避免一次性大改带来的稳定性风险。
 
 ---
 
