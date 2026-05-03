@@ -82,18 +82,24 @@ public:
     }
 
     bool write(const Record& record) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!accepting_) {
-            return false;
-        }
+        bool should_notify = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!accepting_ || !running_) {
+                return false;
+            }
 
-        if (queue_.size() >= queue_capacity_) {
-            records_dropped_.fetch_add(1, std::memory_order_relaxed);
-            return false;
-        }
+            if (queue_.size() >= queue_capacity_) {
+                records_dropped_.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
 
-        queue_.push_back(record);
-        cv_.notify_one();
+            should_notify = queue_.empty();
+            queue_.push_back(record);
+        }
+        if (should_notify) {
+            cv_.notify_one();
+        }
         return true;
     }
 
