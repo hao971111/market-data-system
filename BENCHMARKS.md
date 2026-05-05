@@ -12,17 +12,20 @@
 
 ## 迭代记录
 
-| 日期 | 改动 | Commit | 时长 | msgs/s(avg/max) | INT p99(avg/max) | INT p99 avg变化 | dropped | e2e | 结论 |
-|---|---|---|---:|---:|---:|---:|---:|---|---|
-| 2026-05-02 | Baseline v0 | `dd5ea45` | 60s | 71 / 692 | 581us / 1024us | 基准 | 0 | PASS | 基准版本 |
-| 2026-05-03 | OrderBook 去二次 JSON 解析 | `6d608d8` | 180s | 51 / 499 | 457us / 8192us | avg -21.3% | 0 | PASS | INT p99 avg下降，max有尖刺 |
-| 2026-05-03 | Writer 空队列才 notify 实验 | `aab4bfd` | 180s | 69 / 841 | 514us / 2048us | avg +12.5% | 0 | SKIP | 未见改善，avg回退 |
+
+| 日期         | 改动                    | Commit    | 时长   | msgs/s(avg/max) | INT p99(avg/max) | INT p99 avg变化 | dropped | e2e  | 结论                   |
+| ---------- | --------------------- | --------- | ---- | --------------- | ---------------- | ------------- | ------- | ---- | -------------------- |
+| 2026-05-02 | Baseline v0           | `dd5ea45` | 60s  | 71 / 692        | 581us / 1024us   | 基准            | 0       | PASS | 基准版本                 |
+| 2026-05-03 | OrderBook 去二次 JSON 解析 | `6d608d8` | 180s | 51 / 499        | 457us / 8192us   | avg -21.3%    | 0       | PASS | INT p99 avg下降，max有尖刺 |
+| 2026-05-03 | Writer 空队列才 notify 实验 | `c345dbb`   | 180s | 69 / 841        | 514us / 2048us   | 延迟+12.5% vs上轮 | 0       | SKIP | INT p99未改善             |
+
 
 ## 备注
 
 - 2026-05-02：perf 显示 orderbook 二次 JSON parse/dump 是潜在热点。
 - 2026-05-03：perf 显示 orderbook 二次解析热点明显下降；剩余热点主要是收包、futex 唤醒和 strtod。实时行情和测试时长不同，msgs/s 变化只作参考。
-- 2026-05-03：Writer 空队列才 notify 后，futex/cond_signal 热点仍明显；实时 benchmark 下 INT p99 avg 回退约 12.5%。需要离线压测验证高负载场景是否受益。
+- 2026-05-03：Writer 空队列才 notify 后，perf 采样显示 futex/cond_signal 热点仍明显；本轮 INT p99 avg 高于上一轮，但 msgs/s avg 也更高，不能直接判断为本次变更造成的性能退化。需要离线压测验证高负载场景是否受益。
+- 2026-05-05：当前观测到 live 与离线 bench 的 INT p99 差异，可能主要与“间歇到包 vs 连续喂数”的场景差异有关，仍需在统一喂数模式下继续复测确认；这不代表主处理链路代码不一致。
 
 ## 每次迭代怎么记录
 

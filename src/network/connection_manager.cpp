@@ -199,7 +199,9 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
 
     // 控制消息（订阅 ack: {"result":null,"id":1}）没有 stream/data 字段，正常忽略
     // 注意：这条不算 parse_error——它是合法的控制帧
-    if (!outer.contains("stream") || !outer.contains("data")) {
+    const auto stream_it = outer.find("stream");
+    const auto data_it = outer.find("data");
+    if (stream_it == outer.end() || data_it == outer.end()) {
         return;
     }
 
@@ -207,7 +209,7 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
     // 第一个 '@' 之前是 symbol，之后是流类型描述
     std::string stream_name;
     try {
-        stream_name = outer["stream"].get<std::string>();
+        stream_name = stream_it->get<std::string>();
     } catch (const nlohmann::json::exception&) {
         metrics_.parse_errors.fetch_add(1, std::memory_order_relaxed);
         return;  // stream 字段类型不对，丢弃
@@ -242,8 +244,7 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
 
     // rfind(prefix, 0) 是判前缀的标准 C++ 写法；starts_with 要 C++20
     if (stream_type.rfind("trade", 0) == 0) {
-        const std::string data_str = outer["data"].dump();
-        if (auto t = Parser::parse_trade(data_str)) {
+        if (auto t = Parser::parse_trade(*data_it)) {
             // 端到端延迟：本机时间 - 交易所时间戳。
             // 用 system_clock 不用 steady_clock：因为 trade.timestamp_us 也是
             // wall-clock 微秒（来自 binance），两边口径必须一致。
@@ -262,7 +263,7 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
             metrics_.parse_errors.fetch_add(1, std::memory_order_relaxed);
         }
     } else if (stream_type.rfind("depth", 0) == 0) {
-        if (auto ob = Parser::parse_orderbook(outer["data"], symbol)) {
+        if (auto ob = Parser::parse_orderbook(*data_it, symbol)) {
             metrics_.orderbooks_parsed.fetch_add(1, std::memory_order_relaxed);
             safe_invoke(on_orderbook_, *ob, "orderbook");
         } else {

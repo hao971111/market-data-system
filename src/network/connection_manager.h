@@ -33,6 +33,9 @@ public:
     void set_trade_callback(TradeCallback cb)         { on_trade_     = std::move(cb); }
     void set_orderbook_callback(OrderBookCallback cb) { on_orderbook_ = std::move(cb); }
 
+    // 离线压测/测试入口：复用 live 模式同一条原始消息解析链路，但不连接网络。
+    void process_raw_message(const std::string& msg) { on_raw_message(msg); }
+
 private:
     void reconnect_loop(const std::string& url);
     int64_t calc_backoff_ms(int attempt) const;

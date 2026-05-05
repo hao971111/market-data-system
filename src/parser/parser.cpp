@@ -11,7 +11,20 @@ namespace mds {
 std::optional<Trade> Parser::parse_trade(const std::string& json_str) {
     try {
         auto j = nlohmann::json::parse(json_str);
+        return parse_trade(j);
+    } catch (const nlohmann::json::exception& e) {
+        // JSON 结构错误
+        std::cerr << "[Parser] JSON parse error: " << e.what() << std::endl;
+        return std::nullopt;
+    } catch (const std::exception& e) {
+        // stod 等转换错误（invalid_argument / out_of_range）
+        std::cerr << "[Parser] Parse error: " << e.what() << std::endl;
+        return std::nullopt;
+    }
+}
 
+std::optional<Trade> Parser::parse_trade(const nlohmann::json& j) {
+    try {
         // 过滤非 trade 消息（比如订阅确认消息、ping 等）
         if (!j.contains("e") || j["e"] != "trade") {
             return std::nullopt;
@@ -57,13 +70,10 @@ std::optional<Trade> Parser::parse_trade(const std::string& json_str) {
         trade.set_symbol(sym);
 
         return trade;
-
     } catch (const nlohmann::json::exception& e) {
-        // JSON 结构错误
         std::cerr << "[Parser] JSON parse error: " << e.what() << std::endl;
         return std::nullopt;
     } catch (const std::exception& e) {
-        // stod 等转换错误（invalid_argument / out_of_range）
         std::cerr << "[Parser] Parse error: " << e.what() << std::endl;
         return std::nullopt;
     }

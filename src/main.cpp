@@ -9,13 +9,17 @@
 
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <csignal>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <mutex>
+#include <string>
 #include <string_view>
 #include <thread>
 
+#include "benchmark/pipeline_benchmark.h"
 #include "cache/order_book_ring_buffer.h"
 #include "cache/trade_ring_buffer.h"
 #include "config/config.h"
@@ -38,13 +42,40 @@ void signal_handler(int signum) {
     g_running.store(false, std::memory_order_relaxed);
 }
 
-// 监控上报线程：每秒打印一次"瞬时速率 + 累计值"
+namespace {
+
+// 延迟直方图按较长窗口汇总再 snapshot，避免“每秒只有几十条样本”时 P99 抖动和
+// 与离线百万条窗口的 P99 完全不可比。吞吐类 METRICS 仍保持 1s 粒度。
+constexpr int kLatencyReportIntervalSeconds = 30;
+
+void print_latency_lines(const mds::LatencyHistogram::Snapshot& trade_lat,
+                         const mds::LatencyHistogram::Snapshot& pipeline_lat) {
+    std::lock_guard<std::mutex> lock(g_console_mutex);
+    std::cout << "[LATENCY_EXT] trade"
+              << " count=" << trade_lat.count
+              << " p50="   << trade_lat.p50_us << "us"
+              << " p95="   << trade_lat.p95_us << "us"
+              << " p99="   << trade_lat.p99_us << "us"
+              << " max="   << trade_lat.max_us << "us"
+              << std::endl;
+    std::cout << "[LATENCY_INT] pipeline"
+              << " count=" << pipeline_lat.count
+              << " p50="   << pipeline_lat.p50_us << "us"
+              << " p95="   << pipeline_lat.p95_us << "us"
+              << " p99="   << pipeline_lat.p99_us << "us"
+              << " max="   << pipeline_lat.max_us << "us"
+              << std::endl;
+}
+
+}  // namespace
+
+// 监控上报线程：每秒打印一次"瞬时速率 + 累计值"；延迟分位数每
+// kLatencyReportIntervalSeconds 秒打印并重置直方图（样本更多、P99 更稳）。
 //
 // 退出拆成 10 次 100ms 小睡眠，避免关机时最多卡 1 秒。
 // 不在 signal_handler 里 notify cv，因为那不是 async-signal-safe。
-// 注意：metrics 是非 const 引用——LatencyHistogram::snapshot_and_reset()
-// 会清零所有桶（这是设计：每秒拿到的是"上一秒的分位数"，不是累计直方图）。
-// 其他普通 atomic 计数器仍按 load() 读取，行为不变。
+// 注意：metrics 是非 const 引用——仅在延迟上报 tick 上调用
+// LatencyHistogram::snapshot_and_reset()；其它 atomic 计数器仍按 load() 读取。
 void reporter_loop(mds::Metrics& metrics,
                    const mds::BinaryTradeWriter& trade_writer,
                    const mds::BinaryOrderBookWriter& orderbook_writer) {
@@ -52,12 +83,17 @@ void reporter_loop(mds::Metrics& metrics,
     uint64_t prev_parse_err = 0, prev_cb_err = 0;
     uint64_t prev_trade_written = 0, prev_trade_dropped = 0;
     uint64_t prev_book_written = 0, prev_book_dropped = 0;
+    uint64_t seconds_tick           = 0;
 
     while (g_running.load()) {
         for (int i = 0; i < 10 && g_running.load(); ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         if (!g_running.load()) break;
+
+        ++seconds_tick;
+        const bool report_latency_window =
+            (seconds_tick % kLatencyReportIntervalSeconds == 0);
 
         const uint64_t msgs    = metrics.msgs_recv.load(std::memory_order_relaxed);
         const uint64_t trades  = metrics.trades_parsed.load(std::memory_order_relaxed);
@@ -70,12 +106,6 @@ void reporter_loop(mds::Metrics& metrics,
         const uint64_t trade_dropped = trade_writer.records_dropped();
         const uint64_t book_written  = orderbook_writer.records_written();
         const uint64_t book_dropped  = orderbook_writer.records_dropped();
-
-        // 取一次延迟分位数（顺带清零桶，下一秒重新统计）。
-        // EXT：交易所时间戳 -> 本机回调到达，包含公网/代理。
-        // INT：on_raw_message 进入 -> 函数退出，只看本进程内部处理。
-        const auto trade_lat = metrics.trade_latency.snapshot_and_reset();
-        const auto pipeline_lat = metrics.pipeline_latency.snapshot_and_reset();
 
         {
             std::lock_guard<std::mutex> lock(g_console_mutex);
@@ -101,26 +131,12 @@ void reporter_loop(mds::Metrics& metrics,
                       << std::endl;
         }
 
-        // 延迟分位数每秒固定打印，count=0 也保留，避免观察时出现“缺行”误解。
-        {
-            std::lock_guard<std::mutex> lock(g_console_mutex);
-            std::cout << "[LATENCY_EXT] trade"
-                      << " count=" << trade_lat.count
-                      << " p50="   << trade_lat.p50_us << "us"
-                      << " p95="   << trade_lat.p95_us << "us"
-                      << " p99="   << trade_lat.p99_us << "us"
-                      << " max="   << trade_lat.max_us << "us"
-                      << std::endl;
-        }
-        {
-            std::lock_guard<std::mutex> lock(g_console_mutex);
-            std::cout << "[LATENCY_INT] pipeline"
-                      << " count=" << pipeline_lat.count
-                      << " p50="   << pipeline_lat.p50_us << "us"
-                      << " p95="   << pipeline_lat.p95_us << "us"
-                      << " p99="   << pipeline_lat.p99_us << "us"
-                      << " max="   << pipeline_lat.max_us << "us"
-                      << std::endl;
+        if (report_latency_window) {
+            // EXT：交易所时间戳 -> 本机回调到达，包含公网/代理。
+            // INT：on_raw_message 进入 -> 函数退出，只看本进程内部处理。
+            const auto trade_lat     = metrics.trade_latency.snapshot_and_reset();
+            const auto pipeline_lat  = metrics.pipeline_latency.snapshot_and_reset();
+            print_latency_lines(trade_lat, pipeline_lat);
         }
 
         prev_msgs = msgs;
@@ -132,6 +148,13 @@ void reporter_loop(mds::Metrics& metrics,
         prev_trade_dropped = trade_dropped;
         prev_book_written = book_written;
         prev_book_dropped = book_dropped;
+    }
+
+    // 退出时 flush 未满一个上报窗口的延迟样本，避免“最后一截”只存在于内存里。
+    const auto trade_lat_final    = metrics.trade_latency.snapshot_and_reset();
+    const auto pipeline_lat_final = metrics.pipeline_latency.snapshot_and_reset();
+    if (trade_lat_final.count > 0 || pipeline_lat_final.count > 0) {
+        print_latency_lines(trade_lat_final, pipeline_lat_final);
     }
 }
 
@@ -298,21 +321,211 @@ int run_replay(const mds::Config& config) {
     return ok ? 0 : 1;
 }
 
-int main(int argc, char* argv[]) {
-    bool replay_mode = false;
+int run_bench_pipeline(const mds::Config& config, uint64_t messages, bool enable_write,
+                       uint64_t message_gap_us) {
+    mds::PipelineBenchmarkResult result;
+    try {
+        result = mds::run_pipeline_benchmark(config, messages, enable_write,
+                                             message_gap_us);
+    } catch (const std::exception& e) {
+        std::cerr << "[BENCH-PIPELINE] error=" << e.what() << std::endl;
+        return 1;
+    }
+    std::cout << "[BENCH-PIPELINE]"
+              << " messages=" << result.messages
+              << " write=" << (enable_write ? "yes" : "no")
+              << " gap_us=" << message_gap_us
+              << " processing_seconds=" << result.processing_seconds
+              << " total_seconds=" << result.total_seconds
+              << " processing_msgs/s="
+              << static_cast<uint64_t>(result.processing_msgs_per_sec)
+              << " total_msgs/s=" << static_cast<uint64_t>(result.total_msgs_per_sec)
+              << " trades=" << result.trades
+              << "/" << result.expected_trades
+              << " books=" << result.orderbooks
+              << "/" << result.expected_orderbooks
+              << " parse_errors=" << result.parse_errors
+              << " callback_errors=" << result.callback_errors
+              << " validation_errors=" << result.validation_errors
+              << " trade_written=" << result.trade_written
+              << " trade_dropped=" << result.trade_dropped
+              << " book_written=" << result.orderbook_written
+              << " book_dropped=" << result.orderbook_dropped
+              << " writer_error=" << (result.writer_error ? "yes" : "no")
+              << " p50=" << result.p50_us << "us"
+              << " p95=" << result.p95_us << "us"
+              << " p99=" << result.p99_us << "us"
+              << " max=" << result.max_us << "us"
+              << std::endl;
+    const bool ok = result.parse_errors == 0 &&
+                    result.callback_errors == 0 &&
+                    result.validation_errors == 0 &&
+                    !result.writer_error &&
+                    result.trade_dropped == 0 &&
+                    result.orderbook_dropped == 0 &&
+                    result.trades == result.expected_trades &&
+                    result.orderbooks == result.expected_orderbooks &&
+                    (!enable_write ||
+                     (result.trade_written == result.expected_trades &&
+                      result.orderbook_written == result.expected_orderbooks));
+    return ok ? 0 : 1;
+}
+
+enum class AppMode {
+    Live,
+    Replay,
+    BenchPipeline,
+};
+
+struct CliOptions {
+    AppMode mode = AppMode::Live;
+    uint64_t bench_messages = 100000;
+    uint64_t bench_gap_us = 0;
+    bool bench_gap_specified = false;
+    bool bench_write = false;
+    bool show_help = false;
+};
+
+const char* mode_name(AppMode mode) {
+    switch (mode) {
+        case AppMode::Live:
+            return "live";
+        case AppMode::Replay:
+            return "replay";
+        case AppMode::BenchPipeline:
+            return "bench-pipeline";
+    }
+    return "unknown";
+}
+
+void print_usage(const char* program) {
+    std::cout << "Usage: " << program << " [--replay] [--bench-pipeline [messages]] [--bench-write]"
+              << " [--bench-gap-us <us>]\n"
+              << "  (no args)                 Live mode: receive market data and persist to disk\n"
+              << "  --replay                  Replay mode: read persisted data and dump to stdout\n"
+              << "  --bench-pipeline [N]      Offline parser/callback benchmark with generated JSON\n"
+              << "  --bench-write             Include cache + binary writers in --bench-pipeline\n"
+              << "  --bench-gap-us <us>       Sleep between benchmark messages (simulate arrival pacing)\n";
+}
+
+bool parse_u64_with_min(const std::string& value, uint64_t min_value,
+                        uint64_t& out, std::string& error) {
+    if (value.empty()) {
+        error = "value must not be empty";
+        return false;
+    }
+    if (value[0] == '-') {
+        error = "negative value is not allowed";
+        return false;
+    }
+    for (const unsigned char ch : value) {
+        if (std::isspace(ch)) {
+            error = "whitespace is not allowed";
+            return false;
+        }
+    }
+    try {
+        size_t pos = 0;
+        out = std::stoull(value, &pos);
+        if (pos != value.size()) {
+            error = "trailing characters in integer: " + value;
+            return false;
+        }
+        if (out < min_value) {
+            error = "value must be >= " + std::to_string(min_value);
+            return false;
+        }
+        return true;
+    } catch (const std::exception& e) {
+        error = e.what();
+        return false;
+    }
+}
+
+bool parse_cli_options(int argc, char* argv[], CliOptions& options, std::string& error) {
+    auto select_mode = [&](AppMode mode, std::string_view flag) {
+        if (options.mode != AppMode::Live) {
+            error = "only one mode flag can be used; duplicate/conflicting flag: ";
+            error += flag;
+            return false;
+        }
+        options.mode = mode;
+        return true;
+    };
+
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
-        if (arg == "--replay") {
-            replay_mode = true;
-        } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: " << argv[0] << " [--replay]\n"
-                      << "  (no args)  Live mode: receive market data and persist to disk\n"
-                      << "  --replay   Replay mode: read persisted data and dump to stdout\n";
-            return 0;
-        } else {
-            std::cerr << "[ERROR] Unknown argument: " << arg << std::endl;
-            return 1;
+        if (arg == "--help" || arg == "-h") {
+            options.show_help = true;
+            return true;
         }
+        if (arg == "--replay") {
+            if (!select_mode(AppMode::Replay, arg)) {
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--bench-pipeline") {
+            if (!select_mode(AppMode::BenchPipeline, arg)) {
+                return false;
+            }
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                const std::string value = argv[++i];
+                if (!parse_u64_with_min(value, 1, options.bench_messages, error)) {
+                    error = "invalid --bench-pipeline messages: " + error;
+                    return false;
+                }
+            }
+            continue;
+        }
+        if (arg == "--bench-write") {
+            options.bench_write = true;
+            continue;
+        }
+        if (arg == "--bench-gap-us") {
+            if (i + 1 >= argc) {
+                error = "--bench-gap-us requires a non-negative integer";
+                return false;
+            }
+            const std::string value = argv[++i];
+            options.bench_gap_specified = true;
+            if (!parse_u64_with_min(value, 0, options.bench_gap_us, error)) {
+                error = "invalid --bench-gap-us: " + error;
+                return false;
+            }
+            const auto max_gap = static_cast<uint64_t>(
+                std::numeric_limits<std::chrono::microseconds::rep>::max());
+            if (options.bench_gap_us > max_gap) {
+                error = "--bench-gap-us exceeds supported range";
+                return false;
+            }
+            continue;
+        }
+        error = "unknown argument: ";
+        error += arg;
+        return false;
+    }
+    return true;
+}
+
+int main(int argc, char* argv[]) {
+    CliOptions cli;
+    std::string cli_error;
+    if (!parse_cli_options(argc, argv, cli, cli_error)) {
+        std::cerr << "[ERROR] " << cli_error << std::endl;
+        return 1;
+    }
+    if (cli.show_help) {
+        print_usage(argv[0]);
+        return 0;
+    }
+    if (cli.bench_write && cli.mode != AppMode::BenchPipeline) {
+        std::cerr << "[ERROR] --bench-write requires --bench-pipeline" << std::endl;
+        return 1;
+    }
+    if (cli.bench_gap_specified && cli.mode != AppMode::BenchPipeline) {
+        std::cerr << "[ERROR] --bench-gap-us requires --bench-pipeline" << std::endl;
+        return 1;
     }
 
     // 只有 live 模式注册信号处理器：live 跑的是无限接收循环，必须靠
@@ -320,14 +533,14 @@ int main(int argc, char* argv[]) {
     // replay 模式刻意不注册：RecordReplayer::replay_all 是不可中断的同步循环，
     // 注册了 handler 反而会把 Ctrl+C 吞掉，让用户以为程序卡死。
     // 让默认 SIG_DFL 直接终止进程，体感更好。等到日后回放支持中断时再注册回来。
-    if (!replay_mode) {
+    if (cli.mode == AppMode::Live) {
         std::signal(SIGINT, signal_handler);
         std::signal(SIGTERM, signal_handler);
     }
 
     std::cout << "==================================" << std::endl;
-    std::cout << " Market Data System v0.1.0 ("
-              << (replay_mode ? "replay" : "live") << ")" << std::endl;
+    std::cout << " Market Data System v0.1.0 (" << mode_name(cli.mode) << ")"
+              << std::endl;
     std::cout << "==================================" << std::endl;
 
     // config.load 内部会抛 std::runtime_error / std::invalid_argument
@@ -341,5 +554,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    return replay_mode ? run_replay(config) : run_live(config);
+    if (cli.mode == AppMode::BenchPipeline) {
+        return run_bench_pipeline(config, cli.bench_messages, cli.bench_write,
+                                  cli.bench_gap_us);
+    }
+    return cli.mode == AppMode::Replay ? run_replay(config) : run_live(config);
 }

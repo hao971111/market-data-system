@@ -12,7 +12,7 @@ namespace mds {
 // 工作原理：
 //   bucket[i] 覆盖 [2^i, 2^(i+1)) us
 //   record(lat_us) 用 __builtin_clzll 直接算桶下标，O(1)
-//   每秒一次 snapshot_and_reset 拿分位数 + 清零
+//   上报线程可按周期 snapshot_and_reset 拿分位数 + 清零
 //
 // 精度：每档 2× 范围，p99 估计有 ±2× 误差。生产级用 HDR Histogram
 // （精度 ±0.001%）或 t-digest，实现量大，第一版指数桶足够，能区分

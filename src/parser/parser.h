@@ -14,6 +14,7 @@ public:
     // 解析 Trade 消息
     // 返回 nullopt 的情况：非trade消息、字段缺失、格式错误
     static std::optional<Trade> parse_trade(const std::string& json);
+    static std::optional<Trade> parse_trade(const nlohmann::json& json);
 
     // 解析 OrderBook 深度消息
     static std::optional<OrderBookSnapshot> parse_orderbook(const std::string& json,
