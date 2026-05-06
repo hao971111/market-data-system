@@ -1,4 +1,5 @@
 #include "connection_manager.h"
+#include "../monitor/cpu_affinity.h"
 #include "../parser/parser.h"
 #include <chrono>
 #include <iostream>
@@ -11,8 +12,16 @@ namespace {
 
 class PipelineLatencyRecorder {
 public:
+    // 默认构造：起点 = 当前时间（用于不需要与外部分段对齐的场景）
     explicit PipelineLatencyRecorder(LatencyHistogram& histogram)
         : histogram_(histogram), start_(std::chrono::steady_clock::now()) {}
+
+    // 显式起点构造：让 pipeline 与 SEG 段共用同一个 t_enter，
+    // 这样口径上 pipeline.start == json_parse.start，避免出现"pipeline 起点早于
+    // 三段总和起点"导致的几十~几百 ns 系统性偏差。
+    PipelineLatencyRecorder(LatencyHistogram& histogram,
+                            std::chrono::steady_clock::time_point start)
+        : histogram_(histogram), start_(start) {}
 
     ~PipelineLatencyRecorder() {
         const auto end = std::chrono::steady_clock::now();
@@ -30,6 +39,17 @@ private:
     LatencyHistogram& histogram_;
     std::chrono::steady_clock::time_point start_;
 };
+
+// 把两个 steady_clock 时间点的差值（微秒）落到对应直方图。
+// 负值（极少见的时钟回拨）静默丢弃，避免被强转成天文数字污染 max。
+inline void record_segment_us(LatencyHistogram& h,
+                              std::chrono::steady_clock::time_point a,
+                              std::chrono::steady_clock::time_point b) {
+    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
+    if (us >= 0) {
+        h.record(static_cast<uint64_t>(us));
+    }
+}
 
 }  // namespace
 
@@ -179,9 +199,38 @@ std::string ConnectionManager::build_subscribe_msg(
 //   3) 按 @后缀 区分流类型，分发到 trade / orderbook 解析器
 //   4) 订阅 ack 等控制消息没有 stream 字段，直接丢弃（不算错误）
 void ConnectionManager::on_raw_message(const std::string& msg) {
-    // 内部处理延迟：从 on_raw_message 进入到函数退出。
+    // 第一次进入此函数时，把"消息处理线程"钉到 config_.pin_cpu。
+    // 这是 INT 延迟实测的那个线程（live = io_context；bench = main 线程），
+    // 在这里 pin 才能保证 pin 的就是被测线程，不会传染给 writer 后台线程
+    // （它们在 main 启动时已经 spawn 完，affinity 不受当前线程影响）。
+    //
+    // 单线程语义：当前只有一条路径调用 on_raw_message（见头文件 pin_attempted_
+    // 注释），首条消息时置位并尝试 pin 一次；失败后也置位，不重试（避免刷屏）。
+    if (!pin_attempted_) {
+        pin_attempted_ = true;
+        if (config_.pin_cpu >= 0) {
+            std::string err;
+            if (pin_current_thread_to_cpu(config_.pin_cpu, err)) {
+                std::cerr << "[ConnectionManager] pinned message thread to cpu "
+                          << config_.pin_cpu << std::endl;
+            } else {
+                std::cerr << "[ConnectionManager] pin_cpu="
+                          << config_.pin_cpu << " failed (" << err
+                          << "), continuing unpinned." << std::endl;
+            }
+        }
+    }
+
+    // 分段计时基准：t_enter -> json::parse 完成 -> 业务结构解析完成 -> callback 完成。
+    // 只在命中 trade/orderbook 分支时记录 biz/callback 段，避免控制消息污染分布。
+    // 先取 t_enter，再用同一个时间点去构造 pipeline_timer，保证
+    // pipeline 与 SEG 段共用起点；口径上恒有 pipeline ≥ json+biz+cb，
+    // 差值 = 3 次 record_segment_us 调用开销 + 函数 return + RAII 析构（量级几百 ns）。
+    const auto t_enter = std::chrono::steady_clock::now();
+
+    // 内部处理延迟：起点 = t_enter，终点 = 函数退出（RAII 析构）。
     // RAII 保证 parse error / control ack / trade / orderbook 等所有返回路径都记录。
-    PipelineLatencyRecorder pipeline_timer(metrics_.pipeline_latency);
+    PipelineLatencyRecorder pipeline_timer(metrics_.pipeline_latency, t_enter);
 
     // 监控：每条入站消息（含控制消息）都计入。reporter 用 delta 算 msgs/s
     metrics_.msgs_recv.fetch_add(1, std::memory_order_relaxed);
@@ -196,6 +245,7 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
                   << e.what() << std::endl;
         return;
     }
+    const auto t_after_json = std::chrono::steady_clock::now();
 
     // 控制消息（订阅 ack: {"result":null,"id":1}）没有 stream/data 字段，正常忽略
     // 注意：这条不算 parse_error——它是合法的控制帧
@@ -244,7 +294,11 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
 
     // rfind(prefix, 0) 是判前缀的标准 C++ 写法；starts_with 要 C++20
     if (stream_type.rfind("trade", 0) == 0) {
-        if (auto t = Parser::parse_trade(*data_it)) {
+        auto t = Parser::parse_trade(*data_it);
+        const auto t_after_biz = std::chrono::steady_clock::now();
+        record_segment_us(metrics_.json_parse_latency, t_enter, t_after_json);
+        record_segment_us(metrics_.biz_parse_latency, t_after_json, t_after_biz);
+        if (t) {
             // 端到端延迟：本机时间 - 交易所时间戳。
             // 用 system_clock 不用 steady_clock：因为 trade.timestamp_us 也是
             // wall-clock 微秒（来自 binance），两边口径必须一致。
@@ -258,14 +312,22 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
             }
             metrics_.trades_parsed.fetch_add(1, std::memory_order_relaxed);
             safe_invoke(on_trade_, *t, "trade");
+            const auto t_after_cb = std::chrono::steady_clock::now();
+            record_segment_us(metrics_.callback_latency, t_after_biz, t_after_cb);
         } else {
             // 业务字段缺失/格式错：parse_trade 返回 nullopt
             metrics_.parse_errors.fetch_add(1, std::memory_order_relaxed);
         }
     } else if (stream_type.rfind("depth", 0) == 0) {
-        if (auto ob = Parser::parse_orderbook(*data_it, symbol)) {
+        auto ob = Parser::parse_orderbook(*data_it, symbol);
+        const auto t_after_biz = std::chrono::steady_clock::now();
+        record_segment_us(metrics_.json_parse_latency, t_enter, t_after_json);
+        record_segment_us(metrics_.biz_parse_latency, t_after_json, t_after_biz);
+        if (ob) {
             metrics_.orderbooks_parsed.fetch_add(1, std::memory_order_relaxed);
             safe_invoke(on_orderbook_, *ob, "orderbook");
+            const auto t_after_cb = std::chrono::steady_clock::now();
+            record_segment_us(metrics_.callback_latency, t_after_biz, t_after_cb);
         } else {
             metrics_.parse_errors.fetch_add(1, std::memory_order_relaxed);
         }

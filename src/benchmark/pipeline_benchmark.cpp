@@ -132,6 +132,8 @@ PipelineBenchmarkResult run_pipeline_benchmark(const Config& config,
         throw std::invalid_argument("benchmark message_gap_us exceeds supported range");
     }
 
+    PipelineBenchmarkResult result;
+
     Metrics metrics;
     ConnectionManager mgr(config, metrics);
 
@@ -190,6 +192,10 @@ PipelineBenchmarkResult run_pipeline_benchmark(const Config& config,
         }
     });
 
+    // pin 不在这里调：现在统一交给 ConnectionManager::on_raw_message 第一次进入
+    // 时做（live / bench 共享同一条路径）。这里第一次 process_raw_message 会
+    // 触发 pin，pin 完才开始计时。这意味着 setup（writer.open）已经完成、
+    // writer 后台线程已 spawn，affinity 不会传染。
     const auto start = std::chrono::steady_clock::now();
     for (uint64_t i = 0; i < messages; ++i) {
         mgr.process_raw_message((i % 2 == 0) ? trade_msg : book_msg);
@@ -199,7 +205,6 @@ PipelineBenchmarkResult run_pipeline_benchmark(const Config& config,
     }
     const auto processing_end = std::chrono::steady_clock::now();
 
-    PipelineBenchmarkResult result;
     result.messages = messages;
     result.trades = trade_callbacks;
     result.orderbooks = book_callbacks;
@@ -223,7 +228,11 @@ PipelineBenchmarkResult run_pipeline_benchmark(const Config& config,
     const double processing_seconds =
         std::chrono::duration<double>(processing_end - start).count();
     const double total_seconds = std::chrono::duration<double>(end - start).count();
-    const auto lat = metrics.pipeline_latency.snapshot_and_reset();
+    // 一次性收齐 4 个直方图的快照（在写入线程已停的情况下，串行 reset 不会漏样本）。
+    result.pipeline_lat   = metrics.pipeline_latency.snapshot_and_reset();
+    result.json_parse_lat = metrics.json_parse_latency.snapshot_and_reset();
+    result.biz_parse_lat  = metrics.biz_parse_latency.snapshot_and_reset();
+    result.callback_lat   = metrics.callback_latency.snapshot_and_reset();
     result.processing_seconds = processing_seconds;
     result.total_seconds = total_seconds;
     result.processing_msgs_per_sec = processing_seconds > 0.0
@@ -232,10 +241,10 @@ PipelineBenchmarkResult run_pipeline_benchmark(const Config& config,
     result.total_msgs_per_sec = total_seconds > 0.0
         ? static_cast<double>(messages) / total_seconds
         : 0.0;
-    result.p50_us = lat.p50_us;
-    result.p95_us = lat.p95_us;
-    result.p99_us = lat.p99_us;
-    result.max_us = lat.max_us;
+    result.p50_us = result.pipeline_lat.p50_us;
+    result.p95_us = result.pipeline_lat.p95_us;
+    result.p99_us = result.pipeline_lat.p99_us;
+    result.max_us = result.pipeline_lat.max_us;
     return result;
 }
 

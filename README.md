@@ -10,8 +10,9 @@
 2. **连接保活与重连** — 支持 Ping 心跳、无数据超时检测、自动重连、HTTP CONNECT 代理
 3. **高效解析缓存** — JSON 解析后分发为固定结构体，Trade 写入内存环形缓冲
 4. **二进制存储** — Trade 和 OrderBook 数据异步落盘为二进制文件
-5. **运行时监控** — 输出消息速率、解析成功数、解析错误数、回调错误数、连接成功率
-6. **数据回放** — 已具备 Trade 二进制读取基础，回放控制能力仍在迭代中
+5. **运行时监控** — 吞吐计数器（msgs/s、trades/s、books/s、written/s、dropped/s）+ 内外部延迟直方图（`LATENCY_INT`/`LATENCY_EXT`，每 30 秒聚合一次 P50/P95/P99/Max）
+6. **数据回放** — 支持 `Trade` 与 `OrderBook` 二进制顺序回放（`--replay`）
+7. **离线压测** — 支持 `--bench-pipeline` 走合成 JSON 走解析+回调+写盘链路，可用 `--bench-gap-us` 模拟到包节奏
 
 ### 系统架构
 
@@ -64,19 +65,32 @@ make -j$(nproc)
 
 ```bash
 cd ~/market-data-system
+
+# live：实时接入并落盘
 ./build/market-data-system
+
+# replay：从 data/ 目录顺序回放 trades.bin / orderbooks.bin
+./build/market-data-system --replay
+
+# 离线 pipeline 压测：100 万条合成消息，含写盘
+./build/market-data-system --bench-pipeline 1000000 --bench-write
+
+# 模拟 live 到包节奏（每 4ms 一条），用于贴近 live 场景做对照
+./build/market-data-system --bench-pipeline 100000 --bench-write --bench-gap-us 4000
 ```
 
 > 注意：当前程序默认从运行目录读取 `config.json`，建议从项目根目录启动。
 > 如果你的网络环境需要代理，可以在 `config.json` 里配置 `proxy_url`，否则会 fallback 到 `https_proxy` / `HTTPS_PROXY` 环境变量。
 
-运行成功后会看到类似输出：
+运行成功后会看到类似输出（吞吐每秒一行，延迟分布每 30 秒一行）：
 
 ```text
 [ConnectionManager] Connected.
-[TRADE] btcusdt price=...
-[BOOK]  ethusdt bid=... ask=...
-[METRICS] msgs/s=... trades/s=... books/s=... parse_err/s=... cb_err/s=... | conn=1/1 | total: ...
+[TRADE] #1 BTCUSDT price=... qty=...
+[BOOK]  #1 btcusdt bid=... ask=... spread=...
+[METRICS] msgs/s=... trades/s=... books/s=... trade_written/s=... book_written/s=... ...
+[LATENCY_EXT] trade    count=... p50=... p95=... p99=... max=...
+[LATENCY_INT] pipeline count=... p50=... p95=... p99=... max=...
 ```
 
 ## 目录结构
@@ -109,8 +123,9 @@ market-data-system/
 | parser | Binance Trade / OrderBook JSON 解析 | 已完成基础版 |
 | cache | Trade 内存环形缓冲 | 已完成基础版 |
 | storage | Trade / OrderBook 异步二进制写入 | 已完成基础版 |
-| monitor | 运行时计数器与每秒 reporter 输出 | 已完成基础版 |
-| replay | Trade 二进制读取回放 | 部分完成 |
+| monitor | 计数器 + 内外部延迟直方图（`LATENCY_INT`/`LATENCY_EXT`）+ reporter | 已完成基础版 |
+| replay | Trade / OrderBook 二进制顺序回放 | 已完成基础版 |
+| benchmark | 离线 pipeline 压测：合成 JSON、`--bench-gap-us` 节奏控制 | 已完成基础版 |
 | common | 固定布局行情数据结构 | 已完成基础版 |
 
 ## 性能目标
@@ -126,7 +141,7 @@ market-data-system/
 1. 生产系统通常需要多数据源冗余与跨源校验
 2. 生产系统需要更完整的故障处理、限频日志和告警系统
 3. 生产系统需要按时间分片、索引、压缩或分布式存储
-4. 生产系统需要 p50 / p99 / p999 延迟直方图，而不仅是计数器
+4. 当前已有 P50/P95/P99/Max 指数桶直方图；生产系统通常使用精度更高的 HDR Histogram / t-digest
 5. 生产系统需要和策略、风控、交易执行系统对接
 
 详细扩展点和技术债记录在 `EXTENSIONS.md`。
@@ -140,9 +155,10 @@ market-data-system/
 - [x] 第5步: JSON解析
 - [x] 第6步: 内存缓存（Trade）
 - [x] 第7步: 二进制存储（Trade / OrderBook）
-- [ ] 第8步: 数据回放（部分完成）
-- [x] 第9步: 监控统计（基础计数器）
-- [ ] 第10步: 整合测试
+- [x] 第8步: 数据回放（Trade / OrderBook 顺序回放）
+- [x] 第9步: 监控统计（计数器 + 内外部延迟直方图）
+- [x] 第10步: 离线 pipeline 压测与到包节奏模拟
+- [ ] 第11步: 分段延迟与瓶颈定位
 
 ## License
 

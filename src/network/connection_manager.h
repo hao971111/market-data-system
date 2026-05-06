@@ -53,6 +53,12 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> need_reconnect_{false};
 
+    // 第一次进入 on_raw_message 时尝试绑核，之后短路直通。
+    // 当前 live 的 WebSocket 回调与 bench 的 process_raw_message 都是单线程进
+    // on_raw_message，不存在并发，用普通 bool 即可；未来若 io_context 改多 worker
+    // 再换回 std::atomic<bool> + compare_exchange。
+    bool pin_attempted_ = false;
+
     std::thread reconnect_thread_;
     std::mutex cv_mutex_;
     std::condition_variable cv_;

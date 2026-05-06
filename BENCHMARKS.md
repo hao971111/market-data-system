@@ -26,7 +26,8 @@
 - 2026-05-03：perf 显示 orderbook 二次解析热点明显下降；剩余热点主要是收包、futex 唤醒和 strtod。实时行情和测试时长不同，msgs/s 变化只作参考。
 - 2026-05-03：Writer 空队列才 notify 后，perf 采样显示 futex/cond_signal 热点仍明显；本轮 INT p99 avg 高于上一轮，但 msgs/s avg 也更高，不能直接判断为本次变更造成的性能退化。需要离线压测验证高负载场景是否受益。
 - 2026-05-05：当前观测到 live 与离线 bench 的 INT p99 差异，可能主要与“间歇到包 vs 连续喂数”的场景差异有关，仍需在统一喂数模式下继续复测确认；这不代表主处理链路代码不一致。
-
+- 2026-05-05：trade 路径去掉 data.dump() 二次解析，属于减少冗余解析开销的代码优化；当前 bench/live P99 未见稳定改善，尾延迟仍主要受间歇到包场景影响。
+- 2026-05-06：`--bench-pipeline` 加 `--bench-gap-us` 固定消息间隔后，离线 INT 尾延迟可与 live 同量级，印证差异主要来自「间歇到包 / cache 冷」而非单段代码热点；已加 `LATENCY_SEG` 分段与可选 `--pin-cpu`（WSL 上收益不明显，专机可再试）。
 ## 每次迭代怎么记录
 
 1. 跑：`bash tests/benchmark.sh --duration 60`

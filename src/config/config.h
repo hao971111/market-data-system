@@ -58,6 +58,12 @@ struct Config {
     
     // 日志级别: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
     int log_level = 1;
+
+    // 把"消息处理线程"（live = io_context 线程；bench = main 线程）钉到指定 CPU 核。
+    // -1 = 不绑核（默认）；>= 0 = 绑到该核。
+    // 故意不在 load() 里读 config.json：单一来源 = CLI（--pin-cpu）。
+    // 这个字段是性能验证用的临时开关，不应在配置文件里"半永久持久化"。
+    int pin_cpu = -1;
     
     // 从JSON文件加载配置，覆盖默认值
     // 文件不存在或字段缺失时使用默认值

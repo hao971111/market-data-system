@@ -49,6 +49,15 @@ struct Metrics {
     //       callback 分发和入队写盘等耗时，不包含交易所/公网/代理/NTP 影响。
     LatencyHistogram pipeline_latency;
 
+    // 分段延迟（仅在 trade/orderbook 命中分支时记录）：
+    //   json_parse_latency：外层 nlohmann::json::parse(msg) 耗时
+    //   biz_parse_latency ：业务字段解析（Parser::parse_trade/parse_orderbook）耗时
+    //   callback_latency  ：用户回调耗时（含 cache.push、writer.write 入队）
+    // 三段之和 ≈ pipeline_latency。用来定位"尾延迟主要落在哪一段"。
+    LatencyHistogram json_parse_latency;
+    LatencyHistogram biz_parse_latency;
+    LatencyHistogram callback_latency;
+
     // 禁拷贝（atomic 本身不可拷贝；显式声明让出错信息更清晰）
     Metrics() = default;
     Metrics(const Metrics&) = delete;

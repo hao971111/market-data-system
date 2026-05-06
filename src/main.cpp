@@ -48,23 +48,49 @@ namespace {
 // 与离线百万条窗口的 P99 完全不可比。吞吐类 METRICS 仍保持 1s 粒度。
 constexpr int kLatencyReportIntervalSeconds = 30;
 
-void print_latency_lines(const mds::LatencyHistogram::Snapshot& trade_lat,
-                         const mds::LatencyHistogram::Snapshot& pipeline_lat) {
+// pin_current_thread_to_cpu 已迁移到 monitor/cpu_affinity.{h,cpp}
+// 这里不再保留 main 内的副本，原因：bench 模式的 pin 必须在 writer 后台线程
+// 启动之后再调用，所以实际调用点在 pipeline_benchmark.cpp 内部，而不是 main。
+
+// 把单段直方图快照打印成统一格式的一行。
+// 调用方负责 g_console_mutex；这里只拼字符串。
+void print_latency_segment(const char* tag,
+                           const char* segment,
+                           const mds::LatencyHistogram::Snapshot& s) {
+    std::cout << tag << " " << segment
+              << " count=" << s.count
+              << " p50=" << s.p50_us << "us"
+              << " p95=" << s.p95_us << "us"
+              << " p99=" << s.p99_us << "us"
+              << " max=" << s.max_us << "us"
+              << std::endl;
+}
+
+struct LatencyReport {
+    mds::LatencyHistogram::Snapshot trade;       // EXT
+    mds::LatencyHistogram::Snapshot pipeline;    // INT 总
+    mds::LatencyHistogram::Snapshot json_parse;  // INT 分段
+    mds::LatencyHistogram::Snapshot biz_parse;
+    mds::LatencyHistogram::Snapshot callback;
+};
+
+void print_latency_report(const LatencyReport& r) {
     std::lock_guard<std::mutex> lock(g_console_mutex);
-    std::cout << "[LATENCY_EXT] trade"
-              << " count=" << trade_lat.count
-              << " p50="   << trade_lat.p50_us << "us"
-              << " p95="   << trade_lat.p95_us << "us"
-              << " p99="   << trade_lat.p99_us << "us"
-              << " max="   << trade_lat.max_us << "us"
-              << std::endl;
-    std::cout << "[LATENCY_INT] pipeline"
-              << " count=" << pipeline_lat.count
-              << " p50="   << pipeline_lat.p50_us << "us"
-              << " p95="   << pipeline_lat.p95_us << "us"
-              << " p99="   << pipeline_lat.p99_us << "us"
-              << " max="   << pipeline_lat.max_us << "us"
-              << std::endl;
+    print_latency_segment("[LATENCY_EXT]", "trade",        r.trade);
+    print_latency_segment("[LATENCY_INT]", "pipeline",     r.pipeline);
+    print_latency_segment("[LATENCY_SEG]", "json_parse",   r.json_parse);
+    print_latency_segment("[LATENCY_SEG]", "biz_parse",    r.biz_parse);
+    print_latency_segment("[LATENCY_SEG]", "callback",     r.callback);
+}
+
+LatencyReport collect_and_reset(mds::Metrics& metrics) {
+    LatencyReport r;
+    r.trade      = metrics.trade_latency.snapshot_and_reset();
+    r.pipeline   = metrics.pipeline_latency.snapshot_and_reset();
+    r.json_parse = metrics.json_parse_latency.snapshot_and_reset();
+    r.biz_parse  = metrics.biz_parse_latency.snapshot_and_reset();
+    r.callback   = metrics.callback_latency.snapshot_and_reset();
+    return r;
 }
 
 }  // namespace
@@ -134,9 +160,9 @@ void reporter_loop(mds::Metrics& metrics,
         if (report_latency_window) {
             // EXT：交易所时间戳 -> 本机回调到达，包含公网/代理。
             // INT：on_raw_message 进入 -> 函数退出，只看本进程内部处理。
-            const auto trade_lat     = metrics.trade_latency.snapshot_and_reset();
-            const auto pipeline_lat  = metrics.pipeline_latency.snapshot_and_reset();
-            print_latency_lines(trade_lat, pipeline_lat);
+            // SEG：INT 内部三段分位数（json_parse / biz_parse / callback），
+            //      用来定位"尾延迟主要落在哪一段"。
+            print_latency_report(collect_and_reset(metrics));
         }
 
         prev_msgs = msgs;
@@ -151,10 +177,11 @@ void reporter_loop(mds::Metrics& metrics,
     }
 
     // 退出时 flush 未满一个上报窗口的延迟样本，避免“最后一截”只存在于内存里。
-    const auto trade_lat_final    = metrics.trade_latency.snapshot_and_reset();
-    const auto pipeline_lat_final = metrics.pipeline_latency.snapshot_and_reset();
-    if (trade_lat_final.count > 0 || pipeline_lat_final.count > 0) {
-        print_latency_lines(trade_lat_final, pipeline_lat_final);
+    const auto final_report = collect_and_reset(metrics);
+    if (final_report.trade.count > 0 || final_report.pipeline.count > 0 ||
+        final_report.json_parse.count > 0 || final_report.biz_parse.count > 0 ||
+        final_report.callback.count > 0) {
+        print_latency_report(final_report);
     }
 }
 
@@ -323,6 +350,8 @@ int run_replay(const mds::Config& config) {
 
 int run_bench_pipeline(const mds::Config& config, uint64_t messages, bool enable_write,
                        uint64_t message_gap_us) {
+    // pin 由 ConnectionManager::on_raw_message 第一次进入时统一处理，
+    // pin 成功/失败的日志由 ConnectionManager 自己 stderr 输出。
     mds::PipelineBenchmarkResult result;
     try {
         result = mds::run_pipeline_benchmark(config, messages, enable_write,
@@ -331,10 +360,18 @@ int run_bench_pipeline(const mds::Config& config, uint64_t messages, bool enable
         std::cerr << "[BENCH-PIPELINE] error=" << e.what() << std::endl;
         return 1;
     }
+
+    // pin_cpu 字段反映"调用方请求"的核号；实际 pin 是否成功看 stderr 警告。
+    // 没请求时显示 "none"，方便脚本/CI 抓 benchmark 行做对比。
+    const std::string pin_field = (config.pin_cpu < 0)
+        ? std::string("none")
+        : std::to_string(config.pin_cpu);
+
     std::cout << "[BENCH-PIPELINE]"
               << " messages=" << result.messages
               << " write=" << (enable_write ? "yes" : "no")
               << " gap_us=" << message_gap_us
+              << " pin_cpu=" << pin_field
               << " processing_seconds=" << result.processing_seconds
               << " total_seconds=" << result.total_seconds
               << " processing_msgs/s="
@@ -357,6 +394,12 @@ int run_bench_pipeline(const mds::Config& config, uint64_t messages, bool enable
               << " p99=" << result.p99_us << "us"
               << " max=" << result.max_us << "us"
               << std::endl;
+    // 复用与 live reporter 同一份打印逻辑，保证 bench / live 输出格式一致，
+    // 方便直接 diff 两边的 INT 总段 + 三段分位数。
+    print_latency_segment("[LATENCY_INT]", "pipeline",   result.pipeline_lat);
+    print_latency_segment("[LATENCY_SEG]", "json_parse", result.json_parse_lat);
+    print_latency_segment("[LATENCY_SEG]", "biz_parse",  result.biz_parse_lat);
+    print_latency_segment("[LATENCY_SEG]", "callback",   result.callback_lat);
     const bool ok = result.parse_errors == 0 &&
                     result.callback_errors == 0 &&
                     result.validation_errors == 0 &&
@@ -383,6 +426,10 @@ struct CliOptions {
     uint64_t bench_gap_us = 0;
     bool bench_gap_specified = false;
     bool bench_write = false;
+    // 把"消息处理线程"钉到指定 CPU 核：-1 = 不绑（默认）。
+    // 在 live / bench 两种模式下都生效（由 ConnectionManager::on_raw_message
+    // 第一次进入时统一处理），所以名字不再带 bench- 前缀。
+    int pin_cpu = -1;
     bool show_help = false;
 };
 
@@ -400,12 +447,14 @@ const char* mode_name(AppMode mode) {
 
 void print_usage(const char* program) {
     std::cout << "Usage: " << program << " [--replay] [--bench-pipeline [messages]] [--bench-write]"
-              << " [--bench-gap-us <us>]\n"
+              << " [--bench-gap-us <us>] [--pin-cpu <n>]\n"
               << "  (no args)                 Live mode: receive market data and persist to disk\n"
               << "  --replay                  Replay mode: read persisted data and dump to stdout\n"
               << "  --bench-pipeline [N]      Offline parser/callback benchmark with generated JSON\n"
               << "  --bench-write             Include cache + binary writers in --bench-pipeline\n"
-              << "  --bench-gap-us <us>       Sleep between benchmark messages (simulate arrival pacing)\n";
+              << "  --bench-gap-us <us>       Sleep between benchmark messages (simulate arrival pacing)\n"
+              << "  --pin-cpu <n>             Pin message-processing thread to CPU core <n> (Linux only;\n"
+              << "                            applies to both live and --bench-pipeline modes)\n";
 }
 
 bool parse_u64_with_min(const std::string& value, uint64_t min_value,
@@ -501,6 +550,26 @@ bool parse_cli_options(int argc, char* argv[], CliOptions& options, std::string&
             }
             continue;
         }
+        if (arg == "--pin-cpu") {
+            if (i + 1 >= argc) {
+                error = "--pin-cpu requires a non-negative integer";
+                return false;
+            }
+            const std::string value = argv[++i];
+            uint64_t cpu_u64 = 0;
+            if (!parse_u64_with_min(value, 0, cpu_u64, error)) {
+                error = "invalid --pin-cpu '" + value + "': " + error;
+                return false;
+            }
+            // CPU 索引上界检查放在 pin_current_thread_to_cpu 里做（基于运行时
+            // 实际可用核数 sysconf 更准），CLI 这层只防 INT_MAX 溢出。
+            if (cpu_u64 > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+                error = "--pin-cpu exceeds int range";
+                return false;
+            }
+            options.pin_cpu = static_cast<int>(cpu_u64);
+            continue;
+        }
         error = "unknown argument: ";
         error += arg;
         return false;
@@ -553,6 +622,8 @@ int main(int argc, char* argv[]) {
         std::cerr << "[ERROR] Failed to load config: " << e.what() << std::endl;
         return 1;
     }
+    // CLI 注入 config：pin_cpu 故意不走 config.json，CLI 是单一来源（见 config.h 注释）
+    config.pin_cpu = cli.pin_cpu;
 
     if (cli.mode == AppMode::BenchPipeline) {
         return run_bench_pipeline(config, cli.bench_messages, cli.bench_write,
