@@ -20,15 +20,34 @@ public:
     // 这样口径上 pipeline.start == json_parse.start，避免出现"pipeline 起点早于
     // 三段总和起点"导致的几十~几百 ns 系统性偏差。
     PipelineLatencyRecorder(LatencyHistogram& histogram,
-                            std::chrono::steady_clock::time_point start)
-        : histogram_(histogram), start_(start) {}
+                            std::chrono::steady_clock::time_point start,
+                            std::atomic<uint64_t>* over_500us = nullptr,
+                            std::atomic<uint64_t>* over_1000us = nullptr,
+                            std::atomic<uint64_t>* anomaly_count = nullptr)
+        : histogram_(histogram),
+          start_(start),
+          over_500us_(over_500us),
+          over_1000us_(over_1000us),
+          anomaly_count_(anomaly_count) {}
 
     ~PipelineLatencyRecorder() {
         const auto end = std::chrono::steady_clock::now();
         const auto lat_us = std::chrono::duration_cast<std::chrono::microseconds>(
             end - start_).count();
         if (lat_us >= 0) {
-            histogram_.record(static_cast<uint64_t>(lat_us));
+            const uint64_t v = static_cast<uint64_t>(lat_us);
+            histogram_.record(v);
+            if (over_500us_ != nullptr && v > 500) {
+                over_500us_->fetch_add(1, std::memory_order_relaxed);
+            }
+            if (over_1000us_ != nullptr && v > 1000) {
+                over_1000us_->fetch_add(1, std::memory_order_relaxed);
+            }
+        } else {
+            // steady_clock 正常不会回拨；非零说明有系统级时钟异常
+            if (anomaly_count_ != nullptr) {
+                anomaly_count_->fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
 
@@ -38,17 +57,31 @@ public:
 private:
     LatencyHistogram& histogram_;
     std::chrono::steady_clock::time_point start_;
+    std::atomic<uint64_t>* over_500us_ = nullptr;
+    std::atomic<uint64_t>* over_1000us_ = nullptr;
+    std::atomic<uint64_t>* anomaly_count_ = nullptr;
 };
 
 // 把两个 steady_clock 时间点的差值（微秒）落到对应直方图。
-// 负值（极少见的时钟回拨）静默丢弃，避免被强转成天文数字污染 max。
+// 负值（极少见的时钟回拨）不记录延迟，但计入 anomaly_count 以便感知。
 inline void record_segment_us(LatencyHistogram& h,
                               std::chrono::steady_clock::time_point a,
-                              std::chrono::steady_clock::time_point b) {
+                              std::chrono::steady_clock::time_point b,
+                              std::atomic<uint64_t>* anomaly_count = nullptr) {
     const auto us = std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
     if (us >= 0) {
         h.record(static_cast<uint64_t>(us));
+    } else if (anomaly_count != nullptr) {
+        anomaly_count->fetch_add(1, std::memory_order_relaxed);
     }
+}
+
+inline void update_atomic_max(std::atomic<uint64_t>& target, uint64_t value) {
+    uint64_t prev = target.load(std::memory_order_relaxed);
+    while (value > prev &&
+           !target.compare_exchange_weak(prev, value,
+                                         std::memory_order_relaxed,
+                                         std::memory_order_relaxed)) {}
 }
 
 }  // namespace
@@ -119,8 +152,20 @@ void ConnectionManager::reconnect_loop(const std::string& url) {
         // 只是给 reporter 读取做趋势分析。
         metrics_.connect_attempts.fetch_add(1, std::memory_order_relaxed);
 
+        const auto connect_begin = std::chrono::steady_clock::now();
         bool ok = client_->connect(url, config_.proxy_url,
                                    config_.ping_interval_ms, config_.no_data_timeout_ms);
+        const auto connect_end = std::chrono::steady_clock::now();
+        const auto connect_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            connect_end - connect_begin).count();
+        if (connect_ms >= 0) {
+            const uint64_t v = static_cast<uint64_t>(connect_ms);
+            metrics_.connect_duration_samples.fetch_add(1, std::memory_order_relaxed);
+            metrics_.connect_duration_ms_total.fetch_add(v, std::memory_order_relaxed);
+            update_atomic_max(metrics_.connect_duration_ms_max, v);
+        } else {
+            metrics_.clock_anomaly_count.fetch_add(1, std::memory_order_relaxed);
+        }
 
         if (ok) {
             std::cout << "[ConnectionManager] Connected." << std::endl;
@@ -230,7 +275,10 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
 
     // 内部处理延迟：起点 = t_enter，终点 = 函数退出（RAII 析构）。
     // RAII 保证 parse error / control ack / trade / orderbook 等所有返回路径都记录。
-    PipelineLatencyRecorder pipeline_timer(metrics_.pipeline_latency, t_enter);
+    PipelineLatencyRecorder pipeline_timer(metrics_.pipeline_latency, t_enter,
+                                           &metrics_.pipeline_over_500us,
+                                           &metrics_.pipeline_over_1000us,
+                                           &metrics_.clock_anomaly_count);
 
     // 监控：每条入站消息（含控制消息）都计入。reporter 用 delta 算 msgs/s
     metrics_.msgs_recv.fetch_add(1, std::memory_order_relaxed);
@@ -296,8 +344,10 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
     if (stream_type.rfind("trade", 0) == 0) {
         auto t = Parser::parse_trade(*data_it);
         const auto t_after_biz = std::chrono::steady_clock::now();
-        record_segment_us(metrics_.json_parse_latency, t_enter, t_after_json);
-        record_segment_us(metrics_.biz_parse_latency, t_after_json, t_after_biz);
+        record_segment_us(metrics_.json_parse_latency, t_enter, t_after_json,
+                          &metrics_.clock_anomaly_count);
+        record_segment_us(metrics_.biz_parse_latency, t_after_json, t_after_biz,
+                          &metrics_.clock_anomaly_count);
         if (t) {
             // 端到端延迟：本机时间 - 交易所时间戳。
             // 用 system_clock 不用 steady_clock：因为 trade.timestamp_us 也是
@@ -313,7 +363,8 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
             metrics_.trades_parsed.fetch_add(1, std::memory_order_relaxed);
             safe_invoke(on_trade_, *t, "trade");
             const auto t_after_cb = std::chrono::steady_clock::now();
-            record_segment_us(metrics_.callback_latency, t_after_biz, t_after_cb);
+            record_segment_us(metrics_.callback_latency, t_after_biz, t_after_cb,
+                              &metrics_.clock_anomaly_count);
         } else {
             // 业务字段缺失/格式错：parse_trade 返回 nullopt
             metrics_.parse_errors.fetch_add(1, std::memory_order_relaxed);
@@ -321,13 +372,16 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
     } else if (stream_type.rfind("depth", 0) == 0) {
         auto ob = Parser::parse_orderbook(*data_it, symbol);
         const auto t_after_biz = std::chrono::steady_clock::now();
-        record_segment_us(metrics_.json_parse_latency, t_enter, t_after_json);
-        record_segment_us(metrics_.biz_parse_latency, t_after_json, t_after_biz);
+        record_segment_us(metrics_.json_parse_latency, t_enter, t_after_json,
+                          &metrics_.clock_anomaly_count);
+        record_segment_us(metrics_.biz_parse_latency, t_after_json, t_after_biz,
+                          &metrics_.clock_anomaly_count);
         if (ob) {
             metrics_.orderbooks_parsed.fetch_add(1, std::memory_order_relaxed);
             safe_invoke(on_orderbook_, *ob, "orderbook");
             const auto t_after_cb = std::chrono::steady_clock::now();
-            record_segment_us(metrics_.callback_latency, t_after_biz, t_after_cb);
+            record_segment_us(metrics_.callback_latency, t_after_biz, t_after_cb,
+                              &metrics_.clock_anomaly_count);
         } else {
             metrics_.parse_errors.fetch_add(1, std::memory_order_relaxed);
         }

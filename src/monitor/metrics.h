@@ -36,6 +36,27 @@ struct Metrics {
 
     // 业务回调层
     std::atomic<uint64_t> callback_errors{0};   // 用户回调抛异常被 safe_invoke 接住的次数
+    // pipeline 延迟越界计数（按 on_raw_message 总耗时）
+    std::atomic<uint64_t> pipeline_over_500us{0};
+    std::atomic<uint64_t> pipeline_over_1000us{0};
+
+    // reconnect 连接耗时统计（仅统计 connect() 调用本身耗时）
+    std::atomic<uint64_t> connect_duration_samples{0};
+    std::atomic<uint64_t> connect_duration_ms_total{0};
+    std::atomic<uint64_t> connect_duration_ms_max{0};
+
+    // steady_clock 负值异常计数（正常应恒为 0；非零说明有系统级时钟异常）
+    // 覆盖：pipeline timer / json_parse / biz_parse / callback 分段 /
+    //        connect 计时 / trade enqueue / orderbook enqueue
+    std::atomic<uint64_t> clock_anomaly_count{0};
+
+    // writer 入队耗时（从回调层调用 writer.write() 的耗时）
+    std::atomic<uint64_t> trade_enqueue_samples{0};
+    std::atomic<uint64_t> trade_enqueue_us_total{0};
+    std::atomic<uint64_t> trade_enqueue_us_max{0};
+    std::atomic<uint64_t> orderbook_enqueue_samples{0};
+    std::atomic<uint64_t> orderbook_enqueue_us_total{0};
+    std::atomic<uint64_t> orderbook_enqueue_us_max{0};
 
     // 端到端延迟（交易所时间戳 → 本地回调到达）
     // 口径：trade.timestamp_us 是 binance 服务端发出时刻（wall-clock 微秒）

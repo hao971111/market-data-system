@@ -75,6 +75,7 @@ public:
         records_written_.store(0, std::memory_order_relaxed);
         records_dropped_.store(0, std::memory_order_relaxed);
         write_error_.store(false, std::memory_order_relaxed);
+        queue_depth_max_ = 0;
         running_ = true;
         accepting_ = true;
         worker_ = std::thread(&BinaryRecordWriter::writer_loop, this);
@@ -96,6 +97,10 @@ public:
 
             should_notify = queue_.empty();
             queue_.push_back(record);
+            const uint64_t depth_after_push = static_cast<uint64_t>(queue_.size());
+            if (depth_after_push > queue_depth_max_) {
+                queue_depth_max_ = depth_after_push;
+            }
         }
         if (should_notify) {
             cv_.notify_one();
@@ -138,6 +143,16 @@ public:
 
     bool has_error() const {
         return write_error_.load(std::memory_order_relaxed);
+    }
+
+    uint64_t queue_depth_current() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return static_cast<uint64_t>(queue_.size());
+    }
+
+    uint64_t queue_depth_max() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return queue_depth_max_;
     }
 
 private:
@@ -204,6 +219,7 @@ private:
     std::atomic<uint64_t> records_written_{0};
     std::atomic<uint64_t> records_dropped_{0};
     std::atomic<bool> write_error_{false};
+    uint64_t queue_depth_max_ = 0;
 };
 
 }  // namespace mds

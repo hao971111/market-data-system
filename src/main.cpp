@@ -109,6 +109,7 @@ void reporter_loop(mds::Metrics& metrics,
     uint64_t prev_parse_err = 0, prev_cb_err = 0;
     uint64_t prev_trade_written = 0, prev_trade_dropped = 0;
     uint64_t prev_book_written = 0, prev_book_dropped = 0;
+    uint64_t prev_over_500 = 0, prev_over_1000 = 0;
     uint64_t seconds_tick           = 0;
 
     while (g_running.load()) {
@@ -132,6 +133,28 @@ void reporter_loop(mds::Metrics& metrics,
         const uint64_t trade_dropped = trade_writer.records_dropped();
         const uint64_t book_written  = orderbook_writer.records_written();
         const uint64_t book_dropped  = orderbook_writer.records_dropped();
+        const uint64_t over_500 = metrics.pipeline_over_500us.load(std::memory_order_relaxed);
+        const uint64_t over_1000 = metrics.pipeline_over_1000us.load(std::memory_order_relaxed);
+        const uint64_t clock_anomaly =
+            metrics.clock_anomaly_count.load(std::memory_order_relaxed);
+        const uint64_t conn_dur_samples =
+            metrics.connect_duration_samples.load(std::memory_order_relaxed);
+        const uint64_t conn_dur_total_ms =
+            metrics.connect_duration_ms_total.load(std::memory_order_relaxed);
+        const uint64_t conn_dur_max_ms =
+            metrics.connect_duration_ms_max.load(std::memory_order_relaxed);
+        const uint64_t trade_enqueue_samples =
+            metrics.trade_enqueue_samples.load(std::memory_order_relaxed);
+        const uint64_t trade_enqueue_total_us =
+            metrics.trade_enqueue_us_total.load(std::memory_order_relaxed);
+        const uint64_t trade_enqueue_max_us =
+            metrics.trade_enqueue_us_max.load(std::memory_order_relaxed);
+        const uint64_t book_enqueue_samples =
+            metrics.orderbook_enqueue_samples.load(std::memory_order_relaxed);
+        const uint64_t book_enqueue_total_us =
+            metrics.orderbook_enqueue_us_total.load(std::memory_order_relaxed);
+        const uint64_t book_enqueue_max_us =
+            metrics.orderbook_enqueue_us_max.load(std::memory_order_relaxed);
 
         {
             std::lock_guard<std::mutex> lock(g_console_mutex);
@@ -145,7 +168,27 @@ void reporter_loop(mds::Metrics& metrics,
                       << " book_dropped/s=" << (book_dropped - prev_book_dropped)
                       << " parse_err/s=" << (pe - prev_parse_err)
                       << " cb_err/s=" << (ce - prev_cb_err)
+                      << " over500us/s=" << (over_500 - prev_over_500)
+                      << " over1000us/s=" << (over_1000 - prev_over_1000)
+                      << " clock_anomaly=" << clock_anomaly
                       << " | conn=" << conn_ok << "/" << conn_at
+                      << " conn_ms(avg/max)="
+                      << (conn_dur_samples ? (conn_dur_total_ms / conn_dur_samples) : 0)
+                      << "/" << conn_dur_max_ms
+                      << " trade_enqueue_us(avg/max)="
+                      << (trade_enqueue_samples
+                          ? (trade_enqueue_total_us / trade_enqueue_samples) : 0)
+                      << "/" << trade_enqueue_max_us
+                      << " book_enqueue_us(avg/max)="
+                      << (book_enqueue_samples
+                          ? (book_enqueue_total_us / book_enqueue_samples) : 0)
+                      << "/" << book_enqueue_max_us
+                      << " trade_q(depth/max)="
+                      << trade_writer.queue_depth_current()
+                      << "/" << trade_writer.queue_depth_max()
+                      << " book_q(depth/max)="
+                      << orderbook_writer.queue_depth_current()
+                      << "/" << orderbook_writer.queue_depth_max()
                       << " trade_writer_error=" << (trade_writer.has_error() ? "yes" : "no")
                       << " book_writer_error=" << (orderbook_writer.has_error() ? "yes" : "no")
                       << " | total: msgs=" << msgs
@@ -170,6 +213,8 @@ void reporter_loop(mds::Metrics& metrics,
         prev_books = books;
         prev_parse_err = pe;
         prev_cb_err = ce;
+        prev_over_500 = over_500;
+        prev_over_1000 = over_1000;
         prev_trade_written = trade_written;
         prev_trade_dropped = trade_dropped;
         prev_book_written = book_written;
@@ -230,10 +275,26 @@ int run_live(const mds::Config& config) {
     std::atomic<uint64_t> live_book_print_count{0};
 
     mgr.set_trade_callback([&trade_writer, &trade_cache,
-                            &live_trade_print_count](const mds::Trade& t) {
+                            &live_trade_print_count,
+                            &metrics](const mds::Trade& t) {
         trade_cache.push(t);
+        const auto enqueue_begin = std::chrono::steady_clock::now();
         if (!trade_writer.write(t)) {
             std::cerr << "[ERROR] Failed to write trade" << std::endl;
+        }
+        const auto enqueue_end = std::chrono::steady_clock::now();
+        const auto enqueue_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            enqueue_end - enqueue_begin).count();
+        if (enqueue_us >= 0) {
+            const uint64_t v = static_cast<uint64_t>(enqueue_us);
+            metrics.trade_enqueue_samples.fetch_add(1, std::memory_order_relaxed);
+            metrics.trade_enqueue_us_total.fetch_add(v, std::memory_order_relaxed);
+            uint64_t prev_max = metrics.trade_enqueue_us_max.load(std::memory_order_relaxed);
+            while (v > prev_max &&
+                   !metrics.trade_enqueue_us_max.compare_exchange_weak(
+                       prev_max, v, std::memory_order_relaxed, std::memory_order_relaxed)) {}
+        } else {
+            metrics.clock_anomaly_count.fetch_add(1, std::memory_order_relaxed);
         }
 
         const uint64_t n = live_trade_print_count.fetch_add(
@@ -247,11 +308,27 @@ int run_live(const mds::Config& config) {
     });
 
     mgr.set_orderbook_callback([&orderbook_cache, &orderbook_writer,
-                                &live_book_print_count](
+                                &live_book_print_count, &metrics](
                                    const mds::OrderBookSnapshot& ob) {
         orderbook_cache.push(ob);
+        const auto enqueue_begin = std::chrono::steady_clock::now();
         if (!orderbook_writer.write(ob)) {
             std::cerr << "[ERROR] Failed to write orderbook" << std::endl;
+        }
+        const auto enqueue_end = std::chrono::steady_clock::now();
+        const auto enqueue_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            enqueue_end - enqueue_begin).count();
+        if (enqueue_us >= 0) {
+            const uint64_t v = static_cast<uint64_t>(enqueue_us);
+            metrics.orderbook_enqueue_samples.fetch_add(1, std::memory_order_relaxed);
+            metrics.orderbook_enqueue_us_total.fetch_add(v, std::memory_order_relaxed);
+            uint64_t prev_max =
+                metrics.orderbook_enqueue_us_max.load(std::memory_order_relaxed);
+            while (v > prev_max &&
+                   !metrics.orderbook_enqueue_us_max.compare_exchange_weak(
+                       prev_max, v, std::memory_order_relaxed, std::memory_order_relaxed)) {}
+        } else {
+            metrics.clock_anomaly_count.fetch_add(1, std::memory_order_relaxed);
         }
 
         const uint64_t n = live_book_print_count.fetch_add(
