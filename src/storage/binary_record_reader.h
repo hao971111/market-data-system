@@ -37,9 +37,8 @@ public:
             return false;
         }
 
-        Header header;
-        file_.read(reinterpret_cast<char*>(&header), sizeof(header));
-        if (!file_.good() || !validate_header(header)) {
+        file_.read(reinterpret_cast<char*>(&header_), sizeof(header_));
+        if (!file_.good() || !validate_header(header_)) {
             std::cerr << "[ERROR] Invalid binary file header: " << path << std::endl;
             close();
             return false;
@@ -47,6 +46,10 @@ public:
 
         return true;
     }
+
+    // 返回 header 中记录的条数（由写盘方 close() 时回填）。
+    // 0 表示旧格式文件、写盘异常中止或写入零条。
+    uint64_t get_record_count() const { return header_.get_record_count(); }
 
     bool read_next(Record& record) {
         if (!file_.is_open()) {
@@ -85,6 +88,7 @@ private:
     }
 
     std::ifstream file_;
+    Header header_{};
     bool read_error_ = false;
 };
 

@@ -393,10 +393,12 @@ int run_replay(const mds::Config& config) {
             }
         });
     std::cout << "[REPLAY] Trade summary:"
+              << " header_count=" << trade_result.header_record_count
               << " replayed=" << trade_result.records_replayed
               << " completed=" << (trade_result.completed ? "yes" : "no")
               << " file_error=" << (trade_result.file_error ? "yes" : "no")
               << " callback_error=" << (trade_result.callback_error ? "yes" : "no")
+              << " count_mismatch=" << (trade_result.count_mismatch ? "yes" : "no")
               << std::endl;
 
     uint64_t book_cnt = 0;
@@ -415,10 +417,12 @@ int run_replay(const mds::Config& config) {
             }
         });
     std::cout << "[REPLAY] OrderBook summary:"
+              << " header_count=" << ob_result.header_record_count
               << " replayed=" << ob_result.records_replayed
               << " completed=" << (ob_result.completed ? "yes" : "no")
               << " file_error=" << (ob_result.file_error ? "yes" : "no")
               << " callback_error=" << (ob_result.callback_error ? "yes" : "no")
+              << " count_mismatch=" << (ob_result.count_mismatch ? "yes" : "no")
               << std::endl;
 
     const bool ok = trade_result.completed && ob_result.completed;

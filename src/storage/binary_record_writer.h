@@ -123,6 +123,20 @@ public:
 
         std::lock_guard<std::mutex> lock(mutex_);
         if (file_.is_open()) {
+            // worker 已 join，所有记录都已写入；回填 header 里的 record_count。
+            // 只在无写盘错误时回填，避免用不完整计数覆盖掉已损坏文件的头部。
+            // 只写 record_count 字段本身（8 字节），不重写整个 header，
+            // 避免默认构造 Header 后回写覆盖 magic/version 等字段的风险。
+            if (!write_error_.load(std::memory_order_relaxed)) {
+                const uint64_t n = records_written_.load(std::memory_order_relaxed);
+                file_.seekp(static_cast<std::streamoff>(Header::record_count_offset()));
+                file_.write(reinterpret_cast<const char*>(&n), sizeof(n));
+                if (file_.fail()) {
+                    write_error_.store(true, std::memory_order_relaxed);
+                    std::cerr << "[ERROR] Failed to write record_count to file header"
+                              << std::endl;
+                }
+            }
             file_.flush();
             file_.close();
             if (file_.fail()) {

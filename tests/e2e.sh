@@ -61,9 +61,9 @@ LIVE_LOG="$ROOT/build/e2e_live.log"
 REPLAY_LOG="$ROOT/build/e2e_replay.log"
 
 # 与 src/storage/trade_file_format.h 中的 Header / 结构体大小保持一致：
-#   - TradeFileHeader / OrderBookFileHeader：8B magic + 4B version + 4B record_size = 16
+#   - TradeFileHeader / OrderBookFileHeader：8B magic + 4B version + 4B record_size + 8B record_count = 24
 #   - sizeof(Trade) = 56；sizeof(OrderBookSnapshot) = 664
-HEADER_SIZE=16
+HEADER_SIZE=24
 TRADE_SIZE=56
 BOOK_SIZE=664
 
