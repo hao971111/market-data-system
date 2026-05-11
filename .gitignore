@@ -18,3 +18,6 @@ data/
 
 # 本地 AI 上下文（个人/会话用，不提交远程）
 AI_CONTEXT.md
+
+# local cmake build dirs
+build-*/

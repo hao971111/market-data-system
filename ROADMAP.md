@@ -1,109 +1,132 @@
-# 项目后续路线图
+# 项目架构与开发路线
 
-本文档记录主线完成后的优化方向。原则是：**先建立指标，再根据指标优化**，避免凭感觉改代码。
+本文档面向项目协作与技术演进，说明：
 
----
-
-## 1. 可观测性与指标体系
-
-目标：先把系统运行状态看清楚。
-
-- [x] 吞吐指标：`msgs/s`、`trades/s`、`books/s`
-- [x] 写盘指标：`trade_written/s`、`book_written/s`、`dropped/s`、writer error
-- [x] 外部延迟：`LATENCY_EXT`，交易所时间戳到本机处理时间
-- [x] 内部延迟：`LATENCY_INT`，`on_raw_message()` 内部处理耗时
-- [x] LATENCY 聚合窗口加长：从每秒 1 次改为每 30 秒 1 次，提升 P99 稳定性
-- [ ] writer 队列深度：当前积压量、历史最大积压量
-- [ ] 外部延迟异常样本：负延迟丢弃数、时间校准偏移
-- [ ] 分段延迟：JSON parse、业务解析、callback、writer enqueue、disk write（**下一步重点**）
-- [ ] 资源指标：CPU、RSS 内存、磁盘写入 MB/s、文件增长速率
+- 这个项目的目标和定位
+- 当前系统架构与实现手段
+- 目前已知不足
+- 接下来的开发路线
 
 ---
 
-## 2. 数据链路稳定性
+## 1. 项目目标
 
-目标：让系统能长时间稳定接行情。
+Market Data System 是一个行情数据基础设施项目，核心目标是：
 
-- [x] WebSocket 心跳保活
-- [x] 无数据超时检测
-- [x] 自动重连
-- [x] HTTP CONNECT 代理
-- [ ] 交易所时间校准：server time offset、校准 RTT、offset 抖动
-- [ ] no-data timeout 次数、连续断线次数、重连耗时
-- [ ] 断线后 REST 补数据
-- [ ] 多数据源主备 / 双活
-- [ ] 应用层心跳兼容：用于不标准回复 Pong 的服务端
+1. 稳定接入实时行情（Trade / OrderBook）
+2. 可靠落盘并可验证回放
+3. 为上层策略/研究系统提供可复用 C++ 库能力
 
----
+项目支持两种使用方式：
 
-## 3. 存储与回放能力
-
-目标：数据能可靠落盘、查询、回放和验证。
-
-- [x] Trade / OrderBook 异步二进制写盘
-- [x] Trade / OrderBook 二进制读取与回放
-- [x] 端到端脚本：live -> replay -> 记录数对账
-- [ ] writer 队列深度与写盘延迟监控
-- [ ] 文件头记录 `record_count`
-- [ ] 文件块 checksum / CRC
-- [ ] 启动时检测并截断损坏尾部
-- [ ] 按日期 / 小时 / symbol 文件切分
-- [ ] 时间索引：支持按时间范围快速回放
-- [ ] 回放控制：1x、10x、最快、暂停、恢复
+- CLI 模式：`market-data-system`（live / replay / bench）
+- Library 模式：`libmds_core.a` + `include/mds/*.h`
 
 ---
 
-## 4. 性能优化方向
+## 2. 当前架构
 
-目标：根据指标定位瓶颈，再做针对性优化。
+### 2.1 数据流
 
-优先级建议：
+```text
+WebSocket -> ConnectionManager -> Parser -> Callback -> Writer -> Binary Files
+                                                     \
+                                                      -> User Handler (feed API)
 
-1. [x] 去掉 `outer["data"].dump()` + Parser 内部二次 parse（已做，未观察到稳定 P99 改善，原因见第 7 节）
-2. [ ] 增加 JSON parse / callback / writer enqueue 分段延迟（**下一步重点**）
-3. [ ] 进一步降低日志路径干扰：live 明细打印降频或后台异步化
-4. [ ] writer 队列从 `std::deque + mutex` 升级为 SPSC ring queue
-5. [ ] cache 从 mutex ring buffer 升级为 seq-lock / lock-free snapshot
-6. [ ] 如果 JSON 仍是瓶颈，再评估 simdjson 或二进制协议
+Binary Files -> Reader -> Replayer -> User Handler
+```
 
----
+### 2.2 模块划分
 
-## 5. 配置与工程化
-
-目标：让项目更像可维护的工程系统。
-
-- [ ] `trade_ring_buffer_size` / `orderbook_ring_buffer_size` 分开配置
-- [ ] metrics/log level 可配置
-- [ ] 代理配置增强：认证、`no_proxy`、SOCKS5
-- [ ] 单元测试：Config、Parser、BinaryRecordReader/Writer、RingBuffer
-- [x] benchmark 脚本：`tests/benchmark.sh` + 离线 `--bench-pipeline/--bench-write/--bench-gap-us`
-- [ ] README 更新：架构图、运行方式、指标口径、生产级差距
+- `src/network`：WebSocket 连接、重连、心跳、代理
+- `src/parser`：JSON 到领域结构体解析
+- `src/storage`：二进制异步写入 / 读取
+- `src/replay`：顺序回放与结果校验
+- `src/monitor`：吞吐/延迟等运行指标
+- `src/api`：对外 facade（`feed` / `replayer`）
+- `include/mds`：公共头文件
+- `examples`：最小可运行用法
 
 ---
 
-## 6. 简历与面试准备
+## 3. 关键实现手段
 
-目标：把项目讲成工程能力，而不是只讲代码功能。
+1. **连接稳定性**
+   - 自动重连
+   - 无数据超时检测
+   - Ping 保活
+   - 代理支持（HTTP CONNECT）
 
-- [ ] 项目架构图：Network -> Parser -> Cache -> Storage -> Replay -> Monitor
-- [ ] 数据流图：实时接入、写盘、回放对账
-- [ ] 指标口径说明：`LATENCY_EXT` vs `LATENCY_INT`
-- [ ] 当前瓶颈说明：代理网络、JSON 二次解析、writer 队列
-- [ ] 优化记录：每次优化前后指标对比
-- [ ] 面试问答：为什么这样设计、生产级差距在哪、下一步怎么优化
+2. **数据结构与存储**
+   - 固定布局结构体（适合高效落盘与回放）
+   - Writer 后台线程异步写盘
+   - 文件头记录 `record_count`，回放时做计数一致性校验
+
+3. **可观测性**
+   - 吞吐计数：消息/解析/写入/丢弃
+   - 延迟统计：外部延迟 + 内部流水线延迟
+   - 异常计数：时钟异常、回调异常等
+
+4. **库化设计**
+   - `mds::MarketDataFeed`：实时接收 facade
+   - `mds::Replayer`：回放 facade
+   - 示例：`examples/recv_only.cpp`、`examples/replay_only.cpp`
 
 ---
 
-## 7. 当前观察到的延迟假设
+## 4. 当前状态
 
-目标：把"代码优化"和"场景效应"分开看，避免误归因。
+### 已完成
 
-- live 与离线 bench 的 INT P99 存在差距（live 偏高），**当前推断主要原因是"间歇到包 + 冷启动效应"**：
-  - live 多数时间线程阻塞在 epoll/cv，等到来包再被唤醒；CPU cache、TLB、分支预测都不"热"，单条处理尾延迟更容易被拉长
-  - 离线 bench 默认连续喂数，CPU/缓存常驻热路径，P99 较低
-- 已用 `--bench-gap-us 4000` 在 bench 模式中模拟 live 到包节奏，P99 接近 live，初步支持上述假设
-- **后续验证方向**：
-  - 完成"分段延迟"后，看尾延迟主要落在哪一段（parse / callback / writer enqueue）
-  - 同机原生 Linux vs WSL2 对比，验证 VM 调度抖动占比
-  - 必要时用真实录制 JSON 替代合成 JSON 做离线压测
+- [x] 实时接入链路（network + parser + callback）
+- [x] 异步二进制落盘（Trade / OrderBook）
+- [x] 回放能力与对账校验
+- [x] 静态库拆分（`mds_core`）
+- [x] 公共 API（`feed` / `replayer`）
+- [x] 可选构建模式（只编库 / 只编 CLI / 全部编译）
+
+### 已知不足
+
+1. 库边界仍待收紧：`src/` 目前仍在 PUBLIC include 路径
+2. 安装与分发能力不足：尚未完成公共头安装与 `find_package` 支持
+3. 错误事件模型较弱：当前 feed API 仅暴露 trade/orderbook 回调
+4. 性能诊断粒度还不够：分段延迟未完整打通
+
+---
+
+## 5. 后续开发路线
+
+### P0（优先）
+
+1. **库发布规范化**
+   - 安装公共头（`include/mds`）
+   - 补齐 CMake package 导出（支持 `find_package`）
+
+2. **库边界收敛**
+   - `src/` 从 PUBLIC 收回 PRIVATE
+   - 类型定义逐步迁移到公共头，减少外部对内部路径感知
+
+3. **可观测性增强**
+   - 补齐分段延迟（parse / callback / enqueue / write）
+   - 提供更稳定的 metrics 对外查询口径
+
+### P1（增强）
+
+1. 存储增强：checksum、损坏尾部处理、按时间切分
+2. 回放增强：按时间范围、变速回放
+3. 稳定性增强：连接耗时统计、重连诊断、时间偏移校准
+
+### P2（中长期）
+
+1. 多数据源主备 / 双活
+2. 更高性能数据通路（必要时评估 simdjson 或二进制协议）
+3. 与上层策略/研究系统接口标准化
+
+---
+
+## 6. 文档导航
+
+- 项目入口说明：`README.md`
+- 扩展与技术债：`EXTENSIONS.md`
+- 基准结果记录：`BENCHMARKS.md`
 
