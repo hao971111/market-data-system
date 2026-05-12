@@ -21,3 +21,7 @@ AI_CONTEXT.md
 
 # local cmake build dirs
 build-*/
+
+# local install/build artifacts
+_install/
+build-install-lib/
