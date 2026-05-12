@@ -26,32 +26,32 @@
 - `examples/recv_only.cpp`：实时接收示例
 - `examples/replay_only.cpp`：回放示例
 
-## 编译
+## 使用流程（照抄即可）
 
-支持可选构建，默认三者都编：
+下面分成两条完整流程：  
+1）只想把项目跑起来（可执行文件）；  
+2）想把静态库接到你自己的项目里。
 
-- 静态库：`mds_core`
-- CLI：`market-data-system`
-- 示例：`replay_only`、`recv_only`
+### 流程一：编译并使用可执行文件（从 GitHub 开始）
 
-### 1) 默认（库 + CLI + 示例）
-
-```bash
-cmake -S . -B build
-cmake --build build -j$(nproc)
-```
-
-### 2) 只编静态库
+**第 0 步（仅第一次）：安装依赖**
 
 ```bash
-cmake -S . -B build-lib \
-  -DMDS_BUILD_LIBRARY=ON \
-  -DMDS_BUILD_CLI=OFF \
-  -DMDS_BUILD_EXAMPLES=OFF
-cmake --build build-lib -j$(nproc)
+sudo apt update
+sudo apt install -y build-essential cmake libssl-dev
 ```
 
-### 3) 只编 CLI
+**第 1 步：克隆项目**
+
+```bash
+# HTTPS
+git clone https://github.com/hao971111/market-data-system.git market-data-system
+# 或 SSH
+#git clone git@github.com:hao971111/market-data-system.git market-data-system
+cd market-data-system
+```
+
+**第 2 步：编译可执行文件**
 
 ```bash
 cmake -S . -B build-cli \
@@ -61,78 +61,107 @@ cmake -S . -B build-cli \
 cmake --build build-cli -j$(nproc)
 ```
 
-## 使用方式
-
-### 作为 CLI 使用
+**第 3 步：运行**
 
 ```bash
 # live：实时接入并落盘
-./build/market-data-system
+./build-cli/market-data-system
 
 # replay：从 data/ 顺序回放
-./build/market-data-system --replay
+./build-cli/market-data-system --replay
 
-# 离线链路压测
-./build/market-data-system --bench-pipeline 100000 --bench-write
-```
-
-### 作为库使用
-
-如果你不熟 CMake，按下面 3 步直接复制就能用。
-
-#### 步骤 1：在本仓库里“一键安装”库到本地目录
-
-```bash
-cd /path/to/market-data-system
-bash scripts/install_local_lib.sh
-```
-
-执行完成后，库会被安装到：
-
-- `./_install/include/mds/*.h`
-- `./_install/lib/libmds_core.a`
-
-#### 步骤 2：在你的项目里写 C++ 代码
-
-示例：
-
-```cpp
-#include <mds/feed.h>
-#include <mds/replayer.h>
-```
-
-完整用法参考：
-
-- `examples/recv_only.cpp`（实时接收）
-- `examples/replay_only.cpp`（回放）
-
-#### 步骤 3：用 `g++` 直接链接（不需要你写 CMake）
-
-```bash
-g++ -std=c++17 your_main.cpp \
-  -I /path/to/market-data-system/_install/include \
-  -L /path/to/market-data-system/_install/lib \
-  -lmds_core -lssl -lcrypto -lpthread \
-  -o your_app
+# 离线压测
+./build-cli/market-data-system --bench-pipeline 100000 --bench-write
 ```
 
 ---
 
-如果你熟悉 CMake，也可以用标准方式：
+### 流程二：编译静态库并接入你自己的项目
+
+**第 0 步（仅第一次）：安装依赖**
+
+```bash
+sudo apt update
+sudo apt install -y build-essential cmake libssl-dev
+```
+
+**第 1 步：在库仓库里一键安装本地静态库**
+
+```bash
+# HTTPS
+git clone https://github.com/hao971111/market-data-system.git market-data-system
+# 或 SSH
+# git clone git@github.com:hao971111/market-data-system.git market-data-system
+cd market-data-system
+bash scripts/install_local_lib.sh
+```
+
+执行后会生成本地安装目录：
+
+- `market-data-system/_install/include/mds/*.h`
+- `market-data-system/_install/lib/libmds_core.a`
+- `market-data-system/_install/lib/cmake/mds/mdsConfig.cmake`
+
+**第 2 步：在你的项目里写代码（示例 `main.cpp`）**
+
+```cpp
+#include <mds/replayer.h>
+#include <mds/types.h>
+
+int main() {
+    mds::Replayer r("./data");
+    auto result = r.replay_trades([](const mds::Trade&) {});
+    return result.completed ? 0 : 1;
+}
+```
+
+**第 3 步：编译你的项目（两种方式，任选一种）**
+
+方式 A（最直接，不写 CMake）：
+
+```bash
+g++ -std=c++17 main.cpp \
+  -I /绝对路径/market-data-system/_install/include \
+  -L /绝对路径/market-data-system/_install/lib \
+  -lmds_core -lssl -lcrypto -lpthread \
+  -o my_app
+```
+
+方式 B（标准 CMake，用 `find_package`）：
+
+你的 `CMakeLists.txt`：
 
 ```cmake
+cmake_minimum_required(VERSION 3.16)
+project(my_app LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 find_package(mds CONFIG REQUIRED)
 add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE mds::mds_core)
 ```
 
+编译命令：
+
+```bash
+cmake -S . -B build \
+  -DCMAKE_PREFIX_PATH=/绝对路径/market-data-system/_install
+cmake --build build -j$(nproc)
+```
+
+完整代码可直接参考：
+
+- `examples/recv_only.cpp`（实时接收）
+- `examples/replay_only.cpp`（回放）
+
 ## 开发进度（简版）
 
-- [x] 实时接入 + 解析 + 落盘
-- [x] 回放能力
-- [x] 静态库拆分（`mds_core`）
-- [x] 公共 API（`feed` / `replayer`）与示例
-- [x] 库发布规范化基础版（头文件安装、`find_package` 支持）
+- 实时接入 + 解析 + 落盘
+- 回放能力
+- 静态库拆分（`mds_core`）
+- 公共 API（`feed` / `replayer`）与示例
+- 库发布规范化基础版（头文件安装、`find_package` 支持）
 
 更完整的架构说明、当前不足与后续路线，请查看 `ROADMAP.md`。
 
