@@ -78,8 +78,53 @@ cmake --build build-cli -j$(nproc)
 
 ### 作为库使用
 
-优先参考 `examples/recv_only.cpp` 和 `examples/replay_only.cpp`。  
-这两个示例就是“用户项目里最常见的写法”。
+如果你不熟 CMake，按下面 3 步直接复制就能用。
+
+#### 步骤 1：在本仓库里“一键安装”库到本地目录
+
+```bash
+cd /path/to/market-data-system
+bash scripts/install_local_lib.sh
+```
+
+执行完成后，库会被安装到：
+
+- `./_install/include/mds/*.h`
+- `./_install/lib/libmds_core.a`
+
+#### 步骤 2：在你的项目里写 C++ 代码
+
+示例：
+
+```cpp
+#include <mds/feed.h>
+#include <mds/replayer.h>
+```
+
+完整用法参考：
+
+- `examples/recv_only.cpp`（实时接收）
+- `examples/replay_only.cpp`（回放）
+
+#### 步骤 3：用 `g++` 直接链接（不需要你写 CMake）
+
+```bash
+g++ -std=c++17 your_main.cpp \
+  -I /path/to/market-data-system/_install/include \
+  -L /path/to/market-data-system/_install/lib \
+  -lmds_core -lssl -lcrypto -lpthread \
+  -o your_app
+```
+
+---
+
+如果你熟悉 CMake，也可以用标准方式：
+
+```cmake
+find_package(mds CONFIG REQUIRED)
+add_executable(my_app main.cpp)
+target_link_libraries(my_app PRIVATE mds::mds_core)
+```
 
 ## 开发进度（简版）
 
@@ -87,7 +132,7 @@ cmake --build build-cli -j$(nproc)
 - [x] 回放能力
 - [x] 静态库拆分（`mds_core`）
 - [x] 公共 API（`feed` / `replayer`）与示例
-- [ ] 库发布规范化（头文件安装、`find_package` 支持）
+- [x] 库发布规范化基础版（头文件安装、`find_package` 支持）
 
 更完整的架构说明、当前不足与后续路线，请查看 `ROADMAP.md`。
 

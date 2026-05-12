@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 project(market-data-system VERSION 0.1.0 LANGUAGES CXX)
 
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
 # C++17标准，现代C++特性支持
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,7 +53,9 @@ if(MDS_BUILD_LIBRARY)
 
     target_include_directories(mds_core
         PUBLIC
-            ${PROJECT_SOURCE_DIR}/include
+            $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+        PRIVATE
             ${PROJECT_SOURCE_DIR}/src
     )
 
@@ -109,16 +114,51 @@ file(MAKE_DIRECTORY ${DATA_DIR})
 # 安装规则
 if(MDS_BUILD_LIBRARY AND MDS_BUILD_CLI)
     install(TARGETS ${PROJECT_NAME} mds_core
-        RUNTIME DESTINATION bin
-        ARCHIVE DESTINATION lib
+        EXPORT mdsTargets
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     )
 elseif(MDS_BUILD_LIBRARY)
     install(TARGETS mds_core
-        ARCHIVE DESTINATION lib
+        EXPORT mdsTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     )
 elseif(MDS_BUILD_CLI)
     install(TARGETS ${PROJECT_NAME}
-        RUNTIME DESTINATION bin
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+endif()
+
+if(MDS_BUILD_LIBRARY)
+    # 公共头安装：
+    # - include/mds/*：用户直接 include <mds/...>
+    install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/mds
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+
+    # 导出 targets，供 find_package(mds CONFIG) 使用
+    install(EXPORT mdsTargets
+        FILE mdsTargets.cmake
+        NAMESPACE mds::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/mds
+    )
+
+    # 生成并安装 mdsConfig.cmake / mdsConfigVersion.cmake
+    configure_package_config_file(
+        ${PROJECT_SOURCE_DIR}/cmake/mdsConfig.cmake.in
+        ${PROJECT_BINARY_DIR}/mdsConfig.cmake
+        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/mds
+    )
+    write_basic_package_version_file(
+        ${PROJECT_BINARY_DIR}/mdsConfigVersion.cmake
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY SameMajorVersion
+    )
+
+    install(FILES
+        ${PROJECT_BINARY_DIR}/mdsConfig.cmake
+        ${PROJECT_BINARY_DIR}/mdsConfigVersion.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/mds
     )
 endif()
 
