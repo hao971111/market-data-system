@@ -9,23 +9,28 @@ on:
 jobs:
   build-and-smoke:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y libssl-dev
 
       - name: Build project (default options)
         run: |
+          set -euxo pipefail
           cmake -S . -B build
           cmake --build build -j"$(nproc)"
 
       - name: Build and install library only
         run: |
+          set -euxo pipefail
           cmake -S . -B build-lib \
             -DMDS_BUILD_LIBRARY=ON \
             -DMDS_BUILD_CLI=OFF \
@@ -35,6 +40,7 @@ jobs:
 
       - name: Smoke test find_package(mds)
         run: |
+          set -euxo pipefail
           mkdir -p /tmp/mds-consumer
           cat > /tmp/mds-consumer/CMakeLists.txt <<'EOF'
           cmake_minimum_required(VERSION 3.16)
