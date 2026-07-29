@@ -38,7 +38,7 @@
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential cmake libssl-dev
+sudo apt install -y build-essential cmake libssl-dev libboost-all-dev nlohmann-json3-dev
 ```
 
 **第 1 步：克隆项目**
@@ -82,7 +82,7 @@ cmake --build build-cli -j$(nproc)
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential cmake libssl-dev
+sudo apt install -y build-essential cmake libssl-dev libboost-all-dev nlohmann-json3-dev
 ```
 
 **第 1 步：在库仓库里一键安装本地静态库**
