@@ -26,16 +26,20 @@ add_compile_options(-Wall -Wextra -Wpedantic -Werror)
 
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(Boost REQUIRED)
+find_package(nlohmann_json REQUIRED)
 
 # 构建开关：
 # - MDS_BUILD_LIBRARY=ON  : 构建静态库 mds_core
 # - MDS_BUILD_CLI=ON      : 构建 CLI 可执行文件 market-data-system
 # - MDS_BUILD_EXAMPLES=ON : 构建示例程序（replay_only / recv_only）
+# - MDS_BUILD_TESTS=ON    : 构建 gtest 单元测试并通过 ctest 跑
 #
-# 默认三者都开，保持当前行为不变。
+# 默认前三者都开；测试默认关，避免干净环境拉取 gtest 拖慢常规构建。
 option(MDS_BUILD_LIBRARY "Build mds_core static library" ON)
 option(MDS_BUILD_CLI "Build market-data-system executable" ON)
 option(MDS_BUILD_EXAMPLES "Build examples" ON)
+option(MDS_BUILD_TESTS "Build unit tests (gtest + ctest)" OFF)
 
 # 核心库源码：显式列出，新增/删除文件时必须改这里，避免 GLOB 漏感知
 set(MDS_CORE_SOURCES
@@ -64,6 +68,8 @@ if(MDS_BUILD_LIBRARY)
             Threads::Threads
             OpenSSL::SSL
             OpenSSL::Crypto
+            Boost::headers
+            nlohmann_json::nlohmann_json
     )
 endif()
 
@@ -92,6 +98,8 @@ if(MDS_BUILD_CLI)
                 Threads::Threads
                 OpenSSL::SSL
                 OpenSSL::Crypto
+                Boost::headers
+                nlohmann_json::nlohmann_json
         )
     endif()
 endif()
@@ -162,9 +170,10 @@ if(MDS_BUILD_LIBRARY)
     )
 endif()
 
-# 测试支持（后续添加）
-# enable_testing()
-# add_subdirectory(tests)
+if(MDS_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C++ Standard: ${CMAKE_CXX_STANDARD}")
