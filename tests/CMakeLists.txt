@@ -12,16 +12,19 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(mds_unit_tests
     unit/types_size_test.cpp
+    unit/config_test.cpp
 )
 
 target_include_directories(mds_unit_tests
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src
 )
 
 target_link_libraries(mds_unit_tests
     PRIVATE
         GTest::gtest_main
+        nlohmann_json::nlohmann_json
 )
 
 include(GoogleTest)
