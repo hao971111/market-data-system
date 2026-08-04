@@ -10,9 +10,14 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
+if(NOT TARGET mds_core)
+    message(FATAL_ERROR "MDS_BUILD_TESTS=ON requires MDS_BUILD_LIBRARY=ON")
+endif()
+
 add_executable(mds_unit_tests
     unit/types_size_test.cpp
     unit/config_test.cpp
+    unit/parse_trade_test.cpp
 )
 
 target_include_directories(mds_unit_tests
@@ -23,8 +28,8 @@ target_include_directories(mds_unit_tests
 
 target_link_libraries(mds_unit_tests
     PRIVATE
+        mds_core
         GTest::gtest_main
-        nlohmann_json::nlohmann_json
 )
 
 include(GoogleTest)
