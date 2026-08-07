@@ -18,6 +18,8 @@ add_executable(mds_unit_tests
     unit/types_size_test.cpp
     unit/config_test.cpp
     unit/parse_trade_test.cpp
+    unit/parse_orderbook_test.cpp
+    unit/storage_roundtrip_test.cpp
 )
 
 target_include_directories(mds_unit_tests
