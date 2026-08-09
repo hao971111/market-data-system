@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  # 1) 默认构建（库 + CLI + examples）
+  default-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake \
+            libssl-dev libboost-all-dev nlohmann-json3-dev
+
+      - name: Configure and build
+        run: |
+          cmake -S . -B build
+          cmake --build build -j"$(nproc)"
+
+  # 2) 仅装库 + 下游 find_package(mds) smoke
+  find-package-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake \
+            libssl-dev libboost-all-dev nlohmann-json3-dev
+
+      - name: Build and install library only
+        run: |
+          cmake -S . -B build-lib \
+            -DMDS_BUILD_LIBRARY=ON \
+            -DMDS_BUILD_CLI=OFF \
+            -DMDS_BUILD_EXAMPLES=OFF \
+            -DMDS_BUILD_TESTS=OFF
+          cmake --build build-lib -j"$(nproc)"
+          cmake --install build-lib --prefix "$GITHUB_WORKSPACE/_install_ci"
+
+      - name: Smoke test find_package(mds)
+        run: |
+          mkdir -p /tmp/mds-consumer
+          cat > /tmp/mds-consumer/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.16)
+          project(mds_consumer_smoke LANGUAGES CXX)
+          set(CMAKE_CXX_STANDARD 17)
+          set(CMAKE_CXX_STANDARD_REQUIRED ON)
+          find_package(mds CONFIG REQUIRED)
+          add_executable(mds_consumer main.cpp)
+          target_link_libraries(mds_consumer PRIVATE mds::mds_core)
+          EOF
+          cat > /tmp/mds-consumer/main.cpp <<'EOF'
+          #include <mds/types.h>
+          int main() {
+            return sizeof(mds::Trade) == 56 ? 0 : 1;
+          }
+          EOF
+          cmake -S /tmp/mds-consumer -B /tmp/mds-consumer/build \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/_install_ci"
+          cmake --build /tmp/mds-consumer/build -j"$(nproc)"
+          /tmp/mds-consumer/build/mds_consumer
+
+  # 3) gtest + ctest
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake \
+            libssl-dev libboost-all-dev nlohmann-json3-dev
+
+      - name: Configure, build, ctest
+        run: |
+          cmake -S . -B build-test \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMDS_BUILD_TESTS=ON \
+            -DMDS_BUILD_EXAMPLES=OFF
+          cmake --build build-test -j"$(nproc)"
+          ctest --test-dir build-test --output-on-failure
+
+  # 4) ASAN(+UBSAN) 下跑 offline bench
+  asan-bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake \
+            libssl-dev libboost-all-dev nlohmann-json3-dev
+
+      - name: Configure ASAN build
+        run: |
+          cmake -S . -B build-asan \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DMDS_ENABLE_ASAN=ON \
+            -DMDS_ENABLE_UBSAN=ON \
+            -DMDS_BUILD_TESTS=OFF \
+            -DMDS_BUILD_EXAMPLES=OFF
+
+      - name: Build and run offline bench
+        run: |
+          cmake --build build-asan -j"$(nproc)"
+          ./build-asan/market-data-system --bench-pipeline 20000 --bench-write
