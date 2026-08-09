@@ -62,6 +62,7 @@ void print_latency_segment(const char* tag,
               << " p50=" << s.p50_us << "us"
               << " p95=" << s.p95_us << "us"
               << " p99=" << s.p99_us << "us"
+              << " p99.9=" << s.p999_us << "us"
               << " max=" << s.max_us << "us"
               << std::endl;
 }
@@ -473,6 +474,7 @@ int run_bench_pipeline(const mds::Config& config, uint64_t messages, bool enable
               << " p50=" << result.p50_us << "us"
               << " p95=" << result.p95_us << "us"
               << " p99=" << result.p99_us << "us"
+              << " p99.9=" << result.p999_us << "us"
               << " max=" << result.max_us << "us"
               << std::endl;
     // 复用与 live reporter 同一份打印逻辑，保证 bench / live 输出格式一致，

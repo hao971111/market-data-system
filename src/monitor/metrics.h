@@ -20,7 +20,7 @@ namespace mds {
 //   - reporter 读取用 load(memory_order_relaxed) —— 偶尔少几条无所谓
 //
 // 已有能力：
-//   - 固定桶 LatencyHistogram：trade / pipeline / json_parse / biz_parse / callback（可估 p50/p99）
+//   - 固定桶 LatencyHistogram：trade / pipeline / json_parse / biz_parse / callback（可估 p50/p99/p99.9）
 // 跟生产级的差距：
 //   - 直方图精度与动态范围不如 HdrHistogram 一类专用库
 //   - 没有 metric 导出（Prometheus）：生产用 prometheus-cpp client

@@ -1,16 +1,25 @@
 # 性能测试记录
 
-这里只记录每次迭代最关键的对比结果。详细输出临时看 `build/benchmark_summary.md`。
+优化对比以**离线基线**为准。live 行情表仅作历史参考（消息量随市场波动，不可严格对比）。
 
-## 怎么看
+## 怎么看（离线）
 
-- **主要看 `INT p99`**：这是本进程内部处理延迟，优化代码时优先看它有没有下降。
-- **同时看 `msgs/s`**：确认吞吐没有明显下降。
-- **`msgs/s` 不是严格压测结果**：这里接的是真实行情，消息量会随市场波动变化；严格吞吐对比需要后续用同一份录制数据做离线回放压测。
-- **必须看 `dropped` 和 `e2e`**：掉数必须为 0，回放对账必须 PASS。
-- **暂不看 `LATENCY_EXT`**：外部延迟受本机时间校准、网络和代理影响，先不作为优化判断依据。
+- **主要看 `p99` / `p99.9`**：本进程内部处理延迟（`--bench-pipeline`）。
+- **同时看 `msgs/s` 与 `dropped`**：吞吐与是否丢数；`dropped != 0` 脚本直接失败。
+- **必须看 `write` 列**：默认基线是 **no-write**；打开写盘 msgs/s 会差一倍量级，不可混比。
+- **统一口径**：`messages=50000`，`gap_us=0`，`write=no`（默认）。
+- **数据集固定**：`pipeline_benchmark.cpp` 内确定性合成 trade/depth JSON（非真实行情）。
+- 同一 commit 建议：`bash tests/benchmark.sh --runs 3`。P99 用指数桶，相邻桶允许 2× 差；超出一个桶阶再按相对波动判失败。
 
-## 迭代记录
+## 离线基线
+
+
+| 日期 | Commit | Build | messages | gap_us | write | msgs/s | p50 | p99 | p99.9 | dropped | 结论 |
+| --- | --- | --- | ---: | ---: | --- | ---: | --- | --- | --- | ---: | --- |
+| 2026-08-09 | `63d0c35` | Release | 50000 | 0 | no | 93763 | 32us | 43us | 85us | 0 | offline deterministic; runs=3; p99_range=32-64 |
+
+
+## 历史 live 记录（不可比）
 
 
 | 日期         | 改动                    | Commit    | 时长   | msgs/s(avg/max) | INT p99(avg/max) | INT p99 avg变化 | dropped | e2e  | 结论                   |
@@ -30,9 +39,10 @@
 - 2026-05-05：trade 路径去掉 data.dump() 二次解析，属于减少冗余解析开销的代码优化；当前 bench/live P99 未见稳定改善，尾延迟仍主要受间歇到包场景影响。
 - 2026-05-06：`--bench-pipeline` 加 `--bench-gap-us` 固定消息间隔后，离线 INT 尾延迟可与 live 同量级，印证差异主要来自「间歇到包 / cache 冷」而非单段代码热点；已加 `LATENCY_SEG` 分段与可选 `--pin-cpu`（WSL 上收益不明显，专机可再试）。
 - 2026-05-16：浮点解析切到 `from_chars` 后，perf 中 `strtod` 已不再是主热点；但 live benchmark 的 INT p99 仍在同量级。当前主要热点更偏向 nlohmann JSON DOM 分配/`scan_string` 与 writer/callback 路径。
+- 2026-08-09（Step 8）：离线基线默认 `50000 / gap0 / no-write`；表含 `write` 列；`dropped!=0` 硬失败。
+
 ## 每次迭代怎么记录
 
-1. 跑：`bash tests/benchmark.sh --duration 60`
-2. 看：`build/benchmark_summary.md`
-3. 追加一行到上表，长解释写到“备注”，不要塞进表格。
-
+1. 跑：`bash tests/benchmark.sh --runs 3`（默认 50000、no-write）
+2. 看：`build/benchmark_offline_summary.md`
+3. 把 `build/benchmark_offline_row.md` 追加到「离线基线」表（确认 `write` 列一致再比 msgs/s）。

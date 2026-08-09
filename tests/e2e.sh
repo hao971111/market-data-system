@@ -2,7 +2,8 @@
 # 端到端整合测试：live 接收 N 秒 → SIGINT 退出 → --replay 回放 → 比对计数
 #
 # 校验思路：
-#   写出去多少（按文件大小反推：trades.bin = 16B header + 56B * N，orderbooks.bin = 16B header + 664B * M）
+#   写出去多少（按文件大小反推：trades.bin = 24B header + 56B * N，
+#   orderbooks.bin = 24B header + 664B * M）
 #   == 读回来多少（replay 输出里的 replayed=N）
 # 不依赖 reporter_loop 的 stdout 格式，因为 reporter 在 g_running=false 时
 # 就退出了，writer 在 close 阶段写完队列剩余记录后没有再次打印总数。
@@ -11,11 +12,14 @@
 #   bash tests/e2e.sh                    # 默认 live 30 秒
 #   bash tests/e2e.sh --duration 60      # live 60 秒
 #   bash tests/e2e.sh --skip-live        # 跳过 live 阶段，复用现有 data/
+#   BUILD_DIR=build-cli bash tests/e2e.sh
+#   bash tests/e2e.sh --build-dir build-cli
 
 set -euo pipefail
 
 DURATION=30
 SKIP_LIVE=0
+BUILD_DIR="${BUILD_DIR:-build}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -43,8 +47,16 @@ while [[ $# -gt 0 ]]; do
             SKIP_LIVE=1
             shift
             ;;
+        --build-dir)
+            if [[ -z "${2:-}" ]]; then
+                echo "[E2E] FAIL: --build-dir requires a path" >&2
+                exit 1
+            fi
+            BUILD_DIR="$2"
+            shift 2
+            ;;
         -h|--help)
-            sed -n '2,16p' "$0"
+            sed -n '2,18p' "$0"
             exit 0
             ;;
         *)
@@ -55,10 +67,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/build/market-data-system"
+# 相对路径按仓库根解析，便于 BUILD_DIR=build / build-cli
+if [[ "$BUILD_DIR" != /* ]]; then
+    BUILD_DIR="$ROOT/$BUILD_DIR"
+fi
+BIN="$BUILD_DIR/market-data-system"
 DATA_DIR="$ROOT/data"
-LIVE_LOG="$ROOT/build/e2e_live.log"
-REPLAY_LOG="$ROOT/build/e2e_replay.log"
+LIVE_LOG="$BUILD_DIR/e2e_live.log"
+REPLAY_LOG="$BUILD_DIR/e2e_replay.log"
 
 # 与 src/storage/trade_file_format.h 中的 Header / 结构体大小保持一致：
 #   - TradeFileHeader / OrderBookFileHeader：8B magic + 4B version + 4B record_size + 8B record_count = 24
@@ -67,8 +83,10 @@ HEADER_SIZE=24
 TRADE_SIZE=56
 BOOK_SIZE=664
 
+mkdir -p "$BUILD_DIR"
+
 if [[ ! -x "$BIN" ]]; then
-    echo "[E2E] FAIL: binary not found at $BIN. Run 'cmake --build build' first." >&2
+    echo "[E2E] FAIL: binary not found at $BIN. Build that directory first (e.g. cmake --build build)." >&2
     exit 1
 fi
 

@@ -244,6 +244,7 @@ PipelineBenchmarkResult run_pipeline_benchmark(const Config& config,
     result.p50_us = result.pipeline_lat.p50_us;
     result.p95_us = result.pipeline_lat.p95_us;
     result.p99_us = result.pipeline_lat.p99_us;
+    result.p999_us = result.pipeline_lat.p999_us;
     result.max_us = result.pipeline_lat.max_us;
     return result;
 }

@@ -28,6 +28,7 @@ struct PipelineBenchmarkResult {
     uint64_t p50_us = 0;
     uint64_t p95_us = 0;
     uint64_t p99_us = 0;
+    uint64_t p999_us = 0;
     uint64_t max_us = 0;
     // 分段 snapshot：pipeline 总 + json_parse / biz_parse / callback 三段
     // 三段之和 ≈ pipeline；bench 跟 live 用同一份口径，方便直接对比

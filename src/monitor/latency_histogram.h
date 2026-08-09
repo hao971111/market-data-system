@@ -51,11 +51,12 @@ public:
     }
 
     struct Snapshot {
-        uint64_t count  = 0;
-        uint64_t p50_us = 0;
-        uint64_t p95_us = 0;
-        uint64_t p99_us = 0;
-        uint64_t max_us = 0;
+        uint64_t count   = 0;
+        uint64_t p50_us  = 0;
+        uint64_t p95_us  = 0;
+        uint64_t p99_us  = 0;
+        uint64_t p999_us = 0;  // P99.9
+        uint64_t max_us  = 0;
     };
 
     // 取一次快照并清零所有计数。线程安全但不是"原子一致"——快照过程中
@@ -76,6 +77,8 @@ public:
         s.p50_us = percentile(local, total, 50);
         s.p95_us = percentile(local, total, 95);
         s.p99_us = percentile(local, total, 99);
+        // 999‰ = 99.9%
+        s.p999_us = percentile_permille(local, total, 999);
         return s;
     }
 
@@ -85,6 +88,18 @@ private:
     static uint64_t percentile(const std::array<uint64_t, kBuckets>& buckets,
                                uint64_t total, int percent) {
         const uint64_t target = (total * static_cast<uint64_t>(percent) + 99) / 100;
+        return percentile_target(buckets, target);
+    }
+
+    // permille：千分位，999 = P99.9
+    static uint64_t percentile_permille(const std::array<uint64_t, kBuckets>& buckets,
+                                        uint64_t total, uint64_t permille) {
+        const uint64_t target = (total * permille + 999) / 1000;
+        return percentile_target(buckets, target);
+    }
+
+    static uint64_t percentile_target(const std::array<uint64_t, kBuckets>& buckets,
+                                      uint64_t target) {
         uint64_t cumulative = 0;
         for (int i = 0; i < kBuckets; ++i) {
             cumulative += buckets[i];
