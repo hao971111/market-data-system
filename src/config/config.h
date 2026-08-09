@@ -1,10 +1,13 @@
 #pragma once
 
-#include <string>
-#include <vector>
-#include <fstream>
 #include <cstdlib>
+#include <fstream>
+#include <iostream>
 #include <stdexcept>
+#include <string>
+#include <unordered_set>
+#include <vector>
+
 #include <nlohmann/json.hpp>
 
 namespace mds {
@@ -52,11 +55,11 @@ struct Config {
     int ping_interval_ms = 1000;       // 1秒发一次Ping（兜底保活）
     int no_data_timeout_ms = 3000;     // 3秒无数据（容忍2次Ping失败）
     
-    // 数据补全配置
-    bool enable_data_recovery = true;  // 断线重连后是否补拉数据
+    // reserved（Step 22）：断线补数，当前 load 可读入但尚未接入业务逻辑
+    bool enable_data_recovery = true;
     std::string rest_api_url = "https://api.binance.com";
     
-    // 日志级别: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
+    // reserved（Step 21）：日志级别 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR；当前未驱动实际日志
     int log_level = 1;
 
     // 把"消息处理线程"（live = io_context 线程；bench = main 线程）钉到指定 CPU 核。
@@ -78,6 +81,27 @@ struct Config {
             file >> j;
         } catch (const nlohmann::json::parse_error& e) {
             throw std::runtime_error("Config parse error: " + std::string(e.what()));
+        }
+
+        // 不认识的顶层字段打 WARN，避免"配了却没生效"
+        static const std::unordered_set<std::string> kKnownKeys = {
+            "symbols",
+            "data_dir",
+            "ring_buffer_size",
+            "reconnect_interval_ms",
+            "ping_interval_ms",
+            "no_data_timeout_ms",
+            "log_level",
+            "proxy_url",
+            "data_sources",
+            "enable_data_recovery",
+            "rest_api_url",
+        };
+        for (auto it = j.begin(); it != j.end(); ++it) {
+            if (kKnownKeys.find(it.key()) == kKnownKeys.end()) {
+                std::cerr << "[WARN] Config unknown field ignored: " << it.key()
+                          << std::endl;
+            }
         }
         
         // 只覆盖JSON中存在的字段
@@ -125,6 +149,12 @@ struct Config {
         if (j.contains("log_level")) {
             log_level = j["log_level"].get<int>();
         }
+        if (j.contains("enable_data_recovery")) {
+            enable_data_recovery = j["enable_data_recovery"].get<bool>();
+        }
+        if (j.contains("rest_api_url")) {
+            rest_api_url = j["rest_api_url"].get<std::string>();
+        }
 
         // 代理：配置文件优先，没配置则 fallback 到环境变量
         // 注意 contains 区分"key 不存在"和"key 存在值为空"——
@@ -146,15 +176,57 @@ struct Config {
 
         // 数据源配置
         if (j.contains("data_sources")) {
+            static const std::unordered_set<std::string> kKnownDataSourceKeys = {
+                "name",
+                "ws_url",
+                "priority",
+                "enabled",
+            };
             data_sources.clear();
+            std::size_t index = 0;
             for (const auto& ds : j["data_sources"]) {
+                if (ds.is_object()) {
+                    for (auto it = ds.begin(); it != ds.end(); ++it) {
+                        if (kKnownDataSourceKeys.find(it.key()) ==
+                            kKnownDataSourceKeys.end()) {
+                            std::cerr
+                                << "[WARN] Config unknown field ignored: data_sources["
+                                << index << "]." << it.key() << std::endl;
+                        }
+                    }
+                }
                 DataSourceConfig cfg;
                 cfg.name = ds.value("name", "unnamed");
                 cfg.ws_url = ds.value("ws_url", "");
                 cfg.priority = ds.value("priority", 0);
                 cfg.enabled = ds.value("enabled", true);
                 data_sources.push_back(cfg);
+                ++index;
             }
+        }
+
+        // 时间参数范围：都必须 > 0，且 ping_interval_ms < no_data_timeout_ms
+        if (reconnect_interval_ms <= 0) {
+            throw std::invalid_argument(
+                "Config invalid reconnect_interval_ms=" +
+                std::to_string(reconnect_interval_ms) + " (must be > 0)");
+        }
+        if (ping_interval_ms <= 0) {
+            throw std::invalid_argument(
+                "Config invalid ping_interval_ms=" +
+                std::to_string(ping_interval_ms) + " (must be > 0)");
+        }
+        if (no_data_timeout_ms <= 0) {
+            throw std::invalid_argument(
+                "Config invalid no_data_timeout_ms=" +
+                std::to_string(no_data_timeout_ms) + " (must be > 0)");
+        }
+        if (!(ping_interval_ms < no_data_timeout_ms)) {
+            throw std::invalid_argument(
+                "Config invalid timing: ping_interval_ms=" +
+                std::to_string(ping_interval_ms) +
+                " must be < no_data_timeout_ms=" +
+                std::to_string(no_data_timeout_ms));
         }
     }
 };

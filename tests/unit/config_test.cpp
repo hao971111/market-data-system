@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
+#include <sstream>
 #include <string>
 #include <unistd.h>
 
@@ -141,3 +143,81 @@ TEST_F(ConfigTest, LoadRejectsNonStringProxyUrl) {
         cfg.load(write_json("proxy_obj.json", R"({"proxy_url": {"host": "x"}})").string()),
         std::invalid_argument);
 }
+
+TEST_F(ConfigTest, LoadRejectsNonPositiveTimingFields) {
+    mds::Config cfg;
+
+    EXPECT_THROW(
+        cfg.load(write_json("reconnect_zero.json",
+                             R"({"reconnect_interval_ms": 0})").string()),
+        std::invalid_argument);
+    EXPECT_THROW(
+        cfg.load(write_json("reconnect_neg.json",
+                             R"({"reconnect_interval_ms": -1})").string()),
+        std::invalid_argument);
+    EXPECT_THROW(
+        cfg.load(write_json("ping_zero.json", R"({"ping_interval_ms": 0})").string()),
+        std::invalid_argument);
+    EXPECT_THROW(
+        cfg.load(write_json("timeout_zero.json",
+                             R"({"no_data_timeout_ms": 0})").string()),
+        std::invalid_argument);
+}
+
+TEST_F(ConfigTest, LoadRejectsPingIntervalNotLessThanNoDataTimeout) {
+    mds::Config cfg;
+
+    // 默认 no_data_timeout_ms=3000，ping=3000 不满足 <
+    EXPECT_THROW(
+        cfg.load(write_json("ping_eq.json",
+                             R"({"ping_interval_ms": 3000})").string()),
+        std::invalid_argument);
+    EXPECT_THROW(
+        cfg.load(write_json("ping_gt.json", R"({
+            "ping_interval_ms": 5000,
+            "no_data_timeout_ms": 3000
+        })").string()),
+        std::invalid_argument);
+}
+
+TEST_F(ConfigTest, LoadWarnsOnUnknownField) {
+    mds::Config cfg;
+
+    std::stringstream buffer;
+    auto* old = std::cerr.rdbuf(buffer.rdbuf());
+    cfg.load(write_json("unknown.json", R"({
+        "pong_timeout_ms": 1000,
+        "ping_interval_ms": 1000,
+        "no_data_timeout_ms": 3000
+    })").string());
+    std::cerr.rdbuf(old);
+
+    EXPECT_NE(buffer.str().find("pong_timeout_ms"), std::string::npos);
+    EXPECT_NE(buffer.str().find("[WARN]"), std::string::npos);
+}
+
+TEST_F(ConfigTest, LoadWarnsOnUnknownDataSourceField) {
+    mds::Config cfg;
+
+    std::stringstream buffer;
+    auto* old = std::cerr.rdbuf(buffer.rdbuf());
+    cfg.load(write_json("unknown_ds.json", R"({
+        "data_sources": [
+            {
+                "name": "primary",
+                "ws_ur": "wss://example.test/stream",
+                "priority": 0,
+                "enabled": true
+            }
+        ]
+    })").string());
+    std::cerr.rdbuf(old);
+
+    EXPECT_NE(buffer.str().find("data_sources[0].ws_ur"), std::string::npos);
+    EXPECT_NE(buffer.str().find("[WARN]"), std::string::npos);
+    ASSERT_EQ(cfg.data_sources.size(), 1u);
+    EXPECT_EQ(cfg.data_sources[0].name, "primary");
+    EXPECT_EQ(cfg.data_sources[0].ws_url, "");  // 错字字段未生效，回落默认空串
+}
+
+

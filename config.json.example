@@ -12,7 +12,7 @@
     "ring_buffer_size": 100000,
     "reconnect_interval_ms": 100,
     "ping_interval_ms": 1000,
-    "pong_timeout_ms": 1000,
-    "proxy_url": "http://192.168.1.5:10808",
+    "no_data_timeout_ms": 3000,
+    "proxy_url": "",
     "log_level": 1
 }

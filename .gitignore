@@ -2,6 +2,12 @@
 build/
 build-perf/
 
+# IDE 用：由 cmake 生成（CMAKE_EXPORT_COMPILE_COMMANDS），勿提交
+compile_commands.json
+
+# 本地配置
+config.json
+
 # 数据文件（运行时生成，不提交）
 data/
 
@@ -19,8 +25,7 @@ data/
 # 本地 AI 上下文（个人/会话用，不提交远程）
 AI_CONTEXT.md
 
-# 本地学习笔记 / 个人开发清单（不入库）
-trading-system-notes-Chinese.md
+# 个人开发步骤
 DEVELOPMENT_PLAN.md
 
 # local cmake build dirs
