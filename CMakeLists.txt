@@ -17,9 +17,9 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# Release模式优化，Debug模式调试信息
+# Release 模式优化；Debug 模式只保留调试信息（不再绑死 ASAN）
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -fsanitize=address -fno-omit-frame-pointer")
+set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -fno-omit-frame-pointer")
 
 # 警告选项：严格警告有助于发现潜在问题
 add_compile_options(-Wall -Wextra -Wpedantic -Werror)
@@ -34,12 +34,38 @@ find_package(nlohmann_json REQUIRED)
 # - MDS_BUILD_CLI=ON      : 构建 CLI 可执行文件 market-data-system
 # - MDS_BUILD_EXAMPLES=ON : 构建示例程序（replay_only / recv_only）
 # - MDS_BUILD_TESTS=ON    : 构建 gtest 单元测试并通过 ctest 跑
+# - MDS_ENABLE_ASAN/UBSAN/TSAN : sanitizer，与 Debug/Release 正交，按需单独打开
 #
-# 默认前三者都开；测试默认关，避免干净环境拉取 gtest 拖慢常规构建。
+# 默认前三者都开；测试与 sanitizer 默认关。
 option(MDS_BUILD_LIBRARY "Build mds_core static library" ON)
 option(MDS_BUILD_CLI "Build market-data-system executable" ON)
 option(MDS_BUILD_EXAMPLES "Build examples" ON)
 option(MDS_BUILD_TESTS "Build unit tests (gtest + ctest)" OFF)
+option(MDS_ENABLE_ASAN "Enable AddressSanitizer (compile + link)" OFF)
+option(MDS_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer (compile + link)" OFF)
+option(MDS_ENABLE_TSAN "Enable ThreadSanitizer (compile + link)" OFF)
+
+# ASAN 与 TSAN 不能同时开（运行时互斥）
+if(MDS_ENABLE_ASAN AND MDS_ENABLE_TSAN)
+    message(FATAL_ERROR "MDS_ENABLE_ASAN and MDS_ENABLE_TSAN cannot be enabled together")
+endif()
+
+# sanitizer 必须同时加到编译和链接；只写进 CXX_FLAGS_DEBUG 时链接侧常会漏掉
+set(MDS_SANITIZER_FLAGS "")
+if(MDS_ENABLE_ASAN)
+    list(APPEND MDS_SANITIZER_FLAGS -fsanitize=address)
+endif()
+if(MDS_ENABLE_UBSAN)
+    list(APPEND MDS_SANITIZER_FLAGS -fsanitize=undefined)
+endif()
+if(MDS_ENABLE_TSAN)
+    list(APPEND MDS_SANITIZER_FLAGS -fsanitize=thread)
+endif()
+if(MDS_SANITIZER_FLAGS)
+    # 栈帧指针便于 sanitizer 给出可读堆栈；与 Debug 正交，开 sanitizer 时一并打开
+    add_compile_options(${MDS_SANITIZER_FLAGS} -fno-omit-frame-pointer)
+    add_link_options(${MDS_SANITIZER_FLAGS})
+endif()
 
 # 核心库源码：显式列出，新增/删除文件时必须改这里，避免 GLOB 漏感知
 set(MDS_CORE_SOURCES
