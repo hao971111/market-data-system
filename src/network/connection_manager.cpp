@@ -317,8 +317,30 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
         metrics_.parse_errors.fetch_add(1, std::memory_order_relaxed);
         return;  // 格式异常，丢弃
     }
-    const std::string symbol      = stream_name.substr(0, at_pos);
+    // 统一小写：stream 前缀本就小写，这里再规范一次；Trade 的 s 在 Parser 里也会转小写
+    std::string symbol = stream_name.substr(0, at_pos);
+    for (char& ch : symbol) {
+        if (ch >= 'A' && ch <= 'Z') {
+            ch = static_cast<char>(ch - 'A' + 'a');
+        }
+    }
     const std::string stream_type = stream_name.substr(at_pos + 1);
+
+    // 不在订阅列表里的 symbol：计 parse_errors，不回调（避免脏数据进 cache/落盘）
+    const bool subscribed = std::any_of(
+        config_.symbols.begin(), config_.symbols.end(),
+        [&](std::string s) {
+            for (char& ch : s) {
+                if (ch >= 'A' && ch <= 'Z') {
+                    ch = static_cast<char>(ch - 'A' + 'a');
+                }
+            }
+            return s == symbol;
+        });
+    if (!subscribed) {
+        metrics_.parse_errors.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
 
     // 用户回调隔离：on_trade_ / on_orderbook_ 是上层注入的 lambda，
     // 任何抛出的异常都不能冲垮 WebSocket 读线程（否则 std::terminate 进程死）。

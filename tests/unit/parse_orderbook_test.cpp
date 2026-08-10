@@ -31,7 +31,7 @@ nlohmann::json valid_orderbook_json(int depth = mds::ORDERBOOK_DEPTH) {
 TEST(ParseOrderBook, ParsesValidMessage) {
     const auto book = mds::Parser::parse_orderbook(valid_orderbook_json(), "BTCUSDT");
     ASSERT_TRUE(book.has_value());
-    EXPECT_STREQ(book->symbol, "BTCUSDT");
+    EXPECT_STREQ(book->symbol, "btcusdt");  // 入参大写也会归一成小写
     EXPECT_GT(book->timestamp_us, 0);
 
     EXPECT_DOUBLE_EQ(book->bids[0].price, 100.0);

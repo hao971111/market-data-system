@@ -48,6 +48,15 @@ inline bool parse_double_strict(std::string_view text, double& out) {
     }
 }
 
+std::string to_lower_ascii(std::string s) {
+    for (char& ch : s) {
+        if (ch >= 'A' && ch <= 'Z') {
+            ch = static_cast<char>(ch - 'A' + 'a');
+        }
+    }
+    return s;
+}
+
 }  // namespace
 
 std::optional<Trade> Parser::parse_trade(const std::string& json_str) {
@@ -116,8 +125,8 @@ std::optional<Trade> Parser::parse_trade(const nlohmann::json& j) {
         trade.trade_id       = j["t"].get<int64_t>();
         trade.is_buyer_maker = j["m"].get<bool>();
 
-        // symbol 超长时警告（set_symbol 会截断到15字节）
-        auto sym = j["s"].get<std::string>();
+        // symbol：Binance trade 的 s 是大写；统一成小写，与订阅列表 / OrderBook 一致
+        auto sym = to_lower_ascii(j["s"].get<std::string>());
         if (sym.size() > 15) {
             std::cerr << "[Parser] Symbol truncated: " << sym << std::endl;
         }
@@ -154,7 +163,8 @@ std::optional<OrderBookSnapshot> Parser::parse_orderbook(const nlohmann::json& j
         OrderBookSnapshot snap{};
         snap.timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
-        snap.set_symbol(symbol);
+        // 与 Trade 一致：统一小写，避免大小写分叉
+        snap.set_symbol(to_lower_ascii(std::string(symbol)));
 
         auto parse_levels = [](const nlohmann::json& arr, OrderBookLevel* levels) {
             if (levels == nullptr) {

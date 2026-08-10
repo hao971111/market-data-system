@@ -25,7 +25,7 @@ nlohmann::json valid_trade_json() {
 TEST(ParseTrade, ParsesValidMessage) {
     const auto trade = mds::Parser::parse_trade(valid_trade_json());
     ASSERT_TRUE(trade.has_value());
-    EXPECT_STREQ(trade->symbol, "BTCUSDT");
+    EXPECT_STREQ(trade->symbol, "btcusdt");  // 统一小写
     EXPECT_EQ(trade->trade_id, 12345);
     EXPECT_DOUBLE_EQ(trade->price, 42000.5);
     EXPECT_DOUBLE_EQ(trade->quantity, 0.01);
@@ -70,6 +70,7 @@ TEST(ParseTrade, TruncatesSymbolLongerThan15) {
 
     const auto trade = mds::Parser::parse_trade(j);
     ASSERT_TRUE(trade.has_value());
-    EXPECT_EQ(std::string(trade->symbol), std::string(15, 'X'));
+    // 先转小写再截断
+    EXPECT_EQ(std::string(trade->symbol), std::string(15, 'x'));
     EXPECT_EQ(trade->symbol[15], '\0');
 }

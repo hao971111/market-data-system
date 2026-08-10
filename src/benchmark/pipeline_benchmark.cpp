@@ -144,7 +144,7 @@ PipelineBenchmarkResult run_pipeline_benchmark(const Config& config,
     }
     const auto trade_msg = make_trade_message(symbol);
     const auto book_msg = make_orderbook_message(symbol);
-    const auto sym_upper = upper_symbol(symbol);
+    const auto sym_lower = lower_symbol(symbol);
 
     uint64_t trade_callbacks = 0;
     uint64_t book_callbacks = 0;
@@ -169,7 +169,7 @@ PipelineBenchmarkResult run_pipeline_benchmark(const Config& config,
 
     mgr.set_trade_callback([&](const Trade& trade) {
         ++trade_callbacks;
-        if (!symbol_equals(trade.symbol, sizeof(trade.symbol), sym_upper)) {
+        if (!symbol_equals(trade.symbol, sizeof(trade.symbol), sym_lower)) {
             ++validation_errors;
         }
         if (enable_write) {
@@ -181,7 +181,7 @@ PipelineBenchmarkResult run_pipeline_benchmark(const Config& config,
     });
     mgr.set_orderbook_callback([&](const OrderBookSnapshot& book) {
         ++book_callbacks;
-        if (!symbol_equals(book.symbol, sizeof(book.symbol), symbol)) {
+        if (!symbol_equals(book.symbol, sizeof(book.symbol), sym_lower)) {
             ++validation_errors;
         }
         if (enable_write) {
