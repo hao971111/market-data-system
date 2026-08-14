@@ -76,6 +76,17 @@ inline void record_segment_us(LatencyHistogram& h,
     }
 }
 
+inline int64_t wall_us_now() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+template <typename Record>
+void stamp_recv(Record& rec, int64_t recv_ts_us) {
+    rec.recv_ts_us = recv_ts_us;
+}
+
 inline void update_atomic_max(std::atomic<uint64_t>& target, uint64_t value) {
     uint64_t prev = target.load(std::memory_order_relaxed);
     while (value > prev &&
@@ -272,6 +283,7 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
     // pipeline 与 SEG 段共用起点；口径上恒有 pipeline ≥ json+biz+cb，
     // 差值 = 3 次 record_segment_us 调用开销 + 函数 return + RAII 析构（量级几百 ns）。
     const auto t_enter = std::chrono::steady_clock::now();
+    const int64_t recv_ts_us = wall_us_now();
 
     // 内部处理延迟：起点 = t_enter，终点 = 函数退出（RAII 析构）。
     // RAII 保证 parse error / control ack / trade / orderbook 等所有返回路径都记录。
@@ -389,16 +401,16 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
                 return;
             }
 
-            // 端到端延迟：本机时间 - 交易所时间戳。
-            // 用 system_clock 不用 steady_clock：因为 trade.timestamp_us 也是
-            // wall-clock 微秒（来自 binance），两边口径必须一致。
-            // 时钟不同步可能让差值为负，丢弃即可——record 接 uint64_t，
-            // 这里强转 negative 会变成天文数字、把 max 顶到爆，必须先挡住。
-            const auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count();
-            const int64_t lat_us = now_us - t->timestamp_us;
-            if (lat_us >= 0) {
-                metrics_.trade_latency.record(static_cast<uint64_t>(lat_us));
+            stamp_recv(*t, recv_ts_us);
+            record_segment_us(metrics_.recv_to_app_latency, t_enter, t_after_biz,
+                              &metrics_.clock_anomaly_count);
+            // exchange → recv：两边都是 wall-clock。本机落后交易所时差值为负，丢弃
+            // （record 接 uint64_t，负值会爆 max）。Step 14 再做时钟偏移校准。
+            if (t->exchange_ts_us > 0) {
+                const int64_t lat_us = t->recv_ts_us - t->exchange_ts_us;
+                if (lat_us >= 0) {
+                    metrics_.trade_latency.record(static_cast<uint64_t>(lat_us));
+                }
             }
             metrics_.trades_parsed.fetch_add(1, std::memory_order_relaxed);
             safe_invoke(on_trade_, *t, "trade");
@@ -428,6 +440,10 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
                 return;
             }
             last_id = ob->last_update_id;
+
+            stamp_recv(*ob, recv_ts_us);
+            record_segment_us(metrics_.recv_to_app_latency, t_enter, t_after_biz,
+                              &metrics_.clock_anomaly_count);
 
             metrics_.orderbooks_parsed.fetch_add(1, std::memory_order_relaxed);
             safe_invoke(on_orderbook_, *ob, "orderbook");

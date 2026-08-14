@@ -143,3 +143,25 @@ TEST(OrderBookSeqConnection, RollbackDropped) {
     EXPECT_EQ(metrics.orderbooks_parsed.load(), 2u);
     EXPECT_EQ(metrics.orderbook_id_rollback_count.load(), 1u);
 }
+
+TEST(TimestampLayer, RecvTsStampedOnTradeAndBook) {
+    mds::Config cfg;
+    cfg.symbols = {"btcusdt"};
+    mds::Metrics metrics;
+    mds::ConnectionManager mgr(cfg, metrics);
+
+    mds::Trade got_trade{};
+    mds::OrderBookSnapshot got_book{};
+    mgr.set_trade_callback([&](const mds::Trade& t) { got_trade = t; });
+    mgr.set_orderbook_callback([&](const mds::OrderBookSnapshot& ob) { got_book = ob; });
+
+    mgr.process_raw_message(trade_msg("btcusdt", 1));
+    mgr.process_raw_message(depth_msg("btcusdt", 10));
+
+    EXPECT_EQ(got_trade.exchange_ts_us, 1672515782136LL * 1000);
+    EXPECT_GT(got_trade.recv_ts_us, 0);
+
+    EXPECT_EQ(got_book.exchange_ts_us, 0);
+    EXPECT_GT(got_book.recv_ts_us, 0);
+    EXPECT_GT(metrics.recv_to_app_latency.snapshot_and_reset().count, 0u);
+}

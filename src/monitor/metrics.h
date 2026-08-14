@@ -69,12 +69,12 @@ struct Metrics {
     std::atomic<uint64_t> orderbook_enqueue_us_total{0};
     std::atomic<uint64_t> orderbook_enqueue_us_max{0};
 
-    // 端到端延迟（交易所时间戳 → 本地回调到达）
-    // 口径：trade.timestamp_us 是 binance 服务端发出时刻（wall-clock 微秒）
-    //       我们本地用 system_clock 的 us 作差。含网络往返 + 本地解析。
-    // 注意：OrderBook depth 流不带交易所时间戳，recv_ts_us 是 parser 在本地打的，
-    //       算延迟近似 0 没意义，所以本版本只测 trade。
+    // 时间戳分层（Step 13）
+    //   trade_latency     ：exchange_ts → recv_ts（system_clock，仅 Trade）
+    //   recv_to_app_latency：recv → 进回调（steady_clock，不受 NTP 影响）
+    // OrderBook depth20 没有交易所时间，不记 trade_latency。
     LatencyHistogram trade_latency;
+    LatencyHistogram recv_to_app_latency;
 
     // 内部处理延迟（on_raw_message 进入 → 函数退出）
     // 口径：使用 steady_clock，只衡量本进程内部的 JSON 解析、结构体解析、

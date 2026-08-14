@@ -29,7 +29,7 @@ TEST(ParseTrade, ParsesValidMessage) {
     EXPECT_EQ(trade->trade_id, 12345);
     EXPECT_DOUBLE_EQ(trade->price, 42000.5);
     EXPECT_DOUBLE_EQ(trade->quantity, 0.01);
-    EXPECT_EQ(trade->timestamp_us, 1672515782136LL * 1000);
+    EXPECT_EQ(trade->exchange_ts_us, 1672515782136LL * 1000);
     EXPECT_TRUE(trade->is_buyer_maker);
 }
 

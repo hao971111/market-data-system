@@ -2,9 +2,12 @@
 #include "storage/binary_order_book_writer.h"
 #include "storage/binary_trade_reader.h"
 #include "storage/binary_trade_writer.h"
+#include "storage/trade_file_format.h"
 
+#include <cstddef>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -32,7 +35,8 @@ protected:
 
 mds::Trade make_trade(int i) {
     mds::Trade t{};
-    t.timestamp_us = 1'700'000'000'000'000LL + i;
+    t.exchange_ts_us = 1'700'000'000'000'000LL + i;
+    t.recv_ts_us = t.exchange_ts_us + 100;
     t.trade_id = 10'000 + i;
     t.price = 100.0 + i * 0.01;
     t.quantity = 0.001 + i * 0.0001;
@@ -43,7 +47,9 @@ mds::Trade make_trade(int i) {
 
 mds::OrderBookSnapshot make_book(int i) {
     mds::OrderBookSnapshot book{};
+    book.exchange_ts_us = 0;
     book.recv_ts_us = 1'700'000'000'000'000LL + i;
+    book.last_update_id = 1000 + i;
     book.set_symbol(i % 2 == 0 ? "BTCUSDT" : "ETHUSDT");
     for (int level = 0; level < mds::ORDERBOOK_DEPTH; ++level) {
         book.bids[level].price = 100.0 - level - i * 0.001;
@@ -85,7 +91,8 @@ TEST_F(StorageRoundTripTest, TradeWriteRead1000RecordsFieldExact) {
         ASSERT_TRUE(reader.read_next(got)) << "failed at record " << i;
         EXPECT_EQ(std::memcmp(&got, &original[i], sizeof(mds::Trade)), 0)
             << "mismatch at record " << i;
-        EXPECT_EQ(got.timestamp_us, original[i].timestamp_us);
+        EXPECT_EQ(got.exchange_ts_us, original[i].exchange_ts_us);
+        EXPECT_EQ(got.recv_ts_us, original[i].recv_ts_us);
         EXPECT_EQ(got.trade_id, original[i].trade_id);
         EXPECT_DOUBLE_EQ(got.price, original[i].price);
         EXPECT_DOUBLE_EQ(got.quantity, original[i].quantity);
@@ -140,4 +147,26 @@ TEST_F(StorageRoundTripTest, OrderBookWriteRead1000RecordsFieldExact) {
     mds::OrderBookSnapshot extra{};
     EXPECT_FALSE(reader.read_next(extra));
     EXPECT_FALSE(reader.has_error());
+}
+
+TEST_F(StorageRoundTripTest, ReaderRejectsVersion1Header) {
+    {
+        mds::BinaryTradeWriter writer;
+        ASSERT_TRUE(writer.open(dir_.string(), 16));
+        ASSERT_TRUE(writer.write(make_trade(0)));
+        writer.close();
+    }
+
+    {
+        std::fstream f(dir_ / mds::TradeFileHeader::file_name,
+                       std::ios::binary | std::ios::in | std::ios::out);
+        ASSERT_TRUE(f.is_open());
+        f.seekp(static_cast<std::streamoff>(offsetof(mds::TradeFileHeader, version)));
+        const uint32_t v1 = 1;
+        f.write(reinterpret_cast<const char*>(&v1), sizeof(v1));
+        ASSERT_TRUE(f.good());
+    }
+
+    mds::BinaryTradeReader reader;
+    EXPECT_FALSE(reader.open(dir_.string()));
 }

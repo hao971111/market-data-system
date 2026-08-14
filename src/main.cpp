@@ -68,29 +68,32 @@ void print_latency_segment(const char* tag,
 }
 
 struct LatencyReport {
-    mds::LatencyHistogram::Snapshot trade;       // EXT
-    mds::LatencyHistogram::Snapshot pipeline;    // INT 总
-    mds::LatencyHistogram::Snapshot json_parse;  // INT 分段
+    mds::LatencyHistogram::Snapshot trade;         // EXT: exchange → recv
+    mds::LatencyHistogram::Snapshot recv_to_app;   // INT: recv → 进回调
+    mds::LatencyHistogram::Snapshot pipeline;      // INT 总
+    mds::LatencyHistogram::Snapshot json_parse;    // INT 分段
     mds::LatencyHistogram::Snapshot biz_parse;
     mds::LatencyHistogram::Snapshot callback;
 };
 
 void print_latency_report(const LatencyReport& r) {
     std::lock_guard<std::mutex> lock(g_console_mutex);
-    print_latency_segment("[LATENCY_EXT]", "trade",        r.trade);
-    print_latency_segment("[LATENCY_INT]", "pipeline",     r.pipeline);
-    print_latency_segment("[LATENCY_SEG]", "json_parse",   r.json_parse);
-    print_latency_segment("[LATENCY_SEG]", "biz_parse",    r.biz_parse);
-    print_latency_segment("[LATENCY_SEG]", "callback",     r.callback);
+    print_latency_segment("[LATENCY_EXT]", "exchange_to_recv", r.trade);
+    print_latency_segment("[LATENCY_INT]", "recv_to_app",      r.recv_to_app);
+    print_latency_segment("[LATENCY_INT]", "pipeline",         r.pipeline);
+    print_latency_segment("[LATENCY_SEG]", "json_parse",       r.json_parse);
+    print_latency_segment("[LATENCY_SEG]", "biz_parse",        r.biz_parse);
+    print_latency_segment("[LATENCY_SEG]", "callback",         r.callback);
 }
 
 LatencyReport collect_and_reset(mds::Metrics& metrics) {
     LatencyReport r;
-    r.trade      = metrics.trade_latency.snapshot_and_reset();
-    r.pipeline   = metrics.pipeline_latency.snapshot_and_reset();
-    r.json_parse = metrics.json_parse_latency.snapshot_and_reset();
-    r.biz_parse  = metrics.biz_parse_latency.snapshot_and_reset();
-    r.callback   = metrics.callback_latency.snapshot_and_reset();
+    r.trade       = metrics.trade_latency.snapshot_and_reset();
+    r.recv_to_app = metrics.recv_to_app_latency.snapshot_and_reset();
+    r.pipeline    = metrics.pipeline_latency.snapshot_and_reset();
+    r.json_parse  = metrics.json_parse_latency.snapshot_and_reset();
+    r.biz_parse   = metrics.biz_parse_latency.snapshot_and_reset();
+    r.callback    = metrics.callback_latency.snapshot_and_reset();
     return r;
 }
 
@@ -240,7 +243,8 @@ void reporter_loop(mds::Metrics& metrics,
 
     // 退出时 flush 未满一个上报窗口的延迟样本，避免“最后一截”只存在于内存里。
     const auto final_report = collect_and_reset(metrics);
-    if (final_report.trade.count > 0 || final_report.pipeline.count > 0 ||
+    if (final_report.trade.count > 0 || final_report.recv_to_app.count > 0 ||
+        final_report.pipeline.count > 0 ||
         final_report.json_parse.count > 0 || final_report.biz_parse.count > 0 ||
         final_report.callback.count > 0) {
         print_latency_report(final_report);
@@ -403,7 +407,8 @@ int run_replay(const mds::Config& config) {
             ++trade_cnt;
             if (trade_cnt <= HEAD_SAMPLE || trade_cnt % TRADE_PRINT_EVERY == 0) {
                 std::cout << "[REPLAY-TRADE] #" << trade_cnt
-                          << " ts=" << t.timestamp_us
+                          << " exchange_ts=" << t.exchange_ts_us
+                          << " recv_ts=" << t.recv_ts_us
                           << " " << t.symbol
                           << " price=" << t.price
                           << " qty=" << t.quantity << std::endl;

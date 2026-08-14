@@ -35,7 +35,7 @@ protected:
         ASSERT_TRUE(writer.open(dir_.string(), static_cast<size_t>(count) + 8));
         for (int i = 0; i < count; ++i) {
             mds::Trade t{};
-            t.timestamp_us = 1'700'000'000'000'000LL + i;
+            t.exchange_ts_us = 1'700'000'000'000'000LL + i;
             t.trade_id = i + 1;
             t.price = 100.0 + i;
             t.quantity = 0.01 * (i + 1);

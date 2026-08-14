@@ -5,8 +5,8 @@
 
 #include <gtest/gtest.h>
 
-TEST(TypesSize, TradeIs56BytesAnd8ByteAligned) {
-    EXPECT_EQ(sizeof(mds::Trade), 56u);
+TEST(TypesSize, TradeIs64BytesAnd8ByteAligned) {
+    EXPECT_EQ(sizeof(mds::Trade), 64u);
     EXPECT_EQ(sizeof(mds::Trade) % 8, 0u);
 }
 
@@ -15,8 +15,8 @@ TEST(TypesSize, OrderBookLevelIs16BytesAnd8ByteAligned) {
     EXPECT_EQ(sizeof(mds::OrderBookLevel) % 8, 0u);
 }
 
-TEST(TypesSize, OrderBookSnapshotIs672BytesAnd8ByteAligned) {
-    EXPECT_EQ(sizeof(mds::OrderBookSnapshot), 672u);
+TEST(TypesSize, OrderBookSnapshotIs688BytesAnd8ByteAligned) {
+    EXPECT_EQ(sizeof(mds::OrderBookSnapshot), 688u);
     EXPECT_EQ(sizeof(mds::OrderBookSnapshot) % 8, 0u);
 }
 

@@ -38,8 +38,27 @@ public:
         }
 
         file_.read(reinterpret_cast<char*>(&header_), sizeof(header_));
-        if (!file_.good() || !validate_header(header_)) {
+        if (!file_.good()) {
             std::cerr << "[ERROR] Invalid binary file header: " << path << std::endl;
+            close();
+            return false;
+        }
+        const Header expected;
+        if (std::memcmp(header_.magic, expected.magic, sizeof(expected.magic)) != 0) {
+            std::cerr << "[ERROR] Invalid binary file magic: " << path << std::endl;
+            close();
+            return false;
+        }
+        if (header_.version != expected.version) {
+            std::cerr << "[ERROR] Unsupported file version " << header_.version
+                      << " (need " << expected.version
+                      << "); old data/*.bin is incompatible: " << path << std::endl;
+            close();
+            return false;
+        }
+        if (header_.record_size != sizeof(Record)) {
+            std::cerr << "[ERROR] record_size mismatch: file=" << header_.record_size
+                      << " expected=" << sizeof(Record) << " path=" << path << std::endl;
             close();
             return false;
         }
@@ -80,13 +99,6 @@ public:
     bool has_error() const { return read_error_; }
 
 private:
-    static bool validate_header(const Header& header) {
-        const Header expected;
-        return std::memcmp(header.magic, expected.magic, sizeof(expected.magic)) == 0
-            && header.version == expected.version
-            && header.record_size == sizeof(Record);
-    }
-
     std::ifstream file_;
     Header header_{};
     bool read_error_ = false;

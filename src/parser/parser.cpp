@@ -5,7 +5,6 @@
 #include <cmath>     // isfinite
 #include <climits>   // INT64_MAX
 #include <algorithm> // min
-#include <chrono>
 #include <system_error>
 #include <cctype>
 #include <locale>
@@ -121,7 +120,7 @@ std::optional<Trade> Parser::parse_trade(const nlohmann::json& j) {
             std::cerr << "[Parser] Timestamp out of range" << std::endl;
             return std::nullopt;
         }
-        trade.timestamp_us   = ts_ms * 1000;
+        trade.exchange_ts_us = ts_ms * 1000;
         trade.trade_id       = j["t"].get<int64_t>();
         trade.is_buyer_maker = j["m"].get<bool>();
 
@@ -170,8 +169,6 @@ std::optional<OrderBookSnapshot> Parser::parse_orderbook(const nlohmann::json& j
         }
 
         OrderBookSnapshot snap{};
-        snap.recv_ts_us = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
         snap.last_update_id = last_update_id;
         // 与 Trade 一致：统一小写，避免大小写分叉
         snap.set_symbol(to_lower_ascii(std::string(symbol)));

@@ -32,8 +32,8 @@ TEST(ParseOrderBook, ParsesValidMessage) {
     const auto book = mds::Parser::parse_orderbook(valid_orderbook_json(), "BTCUSDT");
     ASSERT_TRUE(book.has_value());
     EXPECT_STREQ(book->symbol, "btcusdt");  // 入参大写也会归一成小写
-    EXPECT_GT(book->recv_ts_us, 0);
     EXPECT_EQ(book->last_update_id, 123);
+    EXPECT_EQ(book->exchange_ts_us, 0);
 
     EXPECT_DOUBLE_EQ(book->bids[0].price, 100.0);
     EXPECT_DOUBLE_EQ(book->bids[0].quantity, 1.0);

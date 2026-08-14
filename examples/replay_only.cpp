@@ -42,7 +42,8 @@ int main(int argc, char* argv[]) {
     auto tr = replayer.replay_trades([&](const mds::Trade& t) {
         ++trade_seen;
         if (trade_seen <= 3) {
-            std::cout << "[trade] ts=" << t.timestamp_us
+            std::cout << "[trade] exchange_ts=" << t.exchange_ts_us
+                      << " recv_ts=" << t.recv_ts_us
                       << " " << t.symbol
                       << " price=" << t.price
                       << " qty=" << t.quantity << std::endl;
