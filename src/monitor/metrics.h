@@ -36,6 +36,12 @@ struct Metrics {
     std::atomic<uint64_t> orderbooks_parsed{0}; // 成功解析为 OrderBookSnapshot 的消息数
     std::atomic<uint64_t> parse_errors{0};      // 外层 JSON 或 stream 字段异常的次数
 
+    // Trade 序列门（Step 11）：按 symbol 检查 trade_id 连续性
+    std::atomic<uint64_t> gap_count{0};            // 发现跳号的次数（进入 Recovering）
+    std::atomic<uint64_t> duplicate_count{0};      // trade_id <= last 的次数（重复/乱序/回退）
+    std::atomic<uint64_t> missing_records{0};      // 累计缺失条数（各次 gap 区间长度之和）
+    std::atomic<uint64_t> recovering_symbols{0};   // 当前处于 Recovering 的 symbol 数（水位，非累加）
+
     // 业务回调层
     std::atomic<uint64_t> callback_errors{0};   // 用户回调抛异常被 safe_invoke 接住的次数
     // pipeline 延迟越界计数（按 on_raw_message 总耗时）

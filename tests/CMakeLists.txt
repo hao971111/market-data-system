@@ -23,6 +23,8 @@ add_executable(mds_unit_tests
     unit/ring_buffer_test.cpp
     unit/replayer_test.cpp
     unit/symbol_case_test.cpp
+    unit/trade_seq_gate_test.cpp
+    unit/trade_seq_cm_test.cpp
 )
 
 target_include_directories(mds_unit_tests

@@ -371,6 +371,24 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
         record_segment_us(metrics_.biz_parse_latency, t_after_json, t_after_biz,
                           &metrics_.clock_anomaly_count);
         if (t) {
+            const auto seq = trade_seq_gates_[symbol].on_live_trade(t->trade_id);
+            if (seq.action != TradeSeqGate::Action::Accept) {
+                if (seq.action == TradeSeqGate::Action::Duplicate) {
+                    metrics_.duplicate_count.fetch_add(1, std::memory_order_relaxed);
+                } else if (seq.action == TradeSeqGate::Action::Gap) {
+                    metrics_.gap_count.fetch_add(1, std::memory_order_relaxed);
+                    metrics_.missing_records.fetch_add(seq.missing_count(),
+                                                       std::memory_order_relaxed);
+                    metrics_.recovering_symbols.fetch_add(1, std::memory_order_relaxed);
+                    std::cerr << "[ConnectionManager] trade gap " << symbol
+                              << " missing [" << seq.missing_begin
+                              << "," << seq.missing_end << "] count="
+                              << seq.missing_count() << std::endl;
+                }
+                // Hold：已在 Recovering，只拦回调，不再加 gap/recovering
+                return;
+            }
+
             // 端到端延迟：本机时间 - 交易所时间戳。
             // 用 system_clock 不用 steady_clock：因为 trade.timestamp_us 也是
             // wall-clock 微秒（来自 binance），两边口径必须一致。

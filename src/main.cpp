@@ -111,6 +111,7 @@ void reporter_loop(mds::Metrics& metrics,
     uint64_t prev_trade_written = 0, prev_trade_dropped = 0;
     uint64_t prev_book_written = 0, prev_book_dropped = 0;
     uint64_t prev_over_500 = 0, prev_over_1000 = 0;
+    uint64_t prev_gap = 0, prev_dup = 0;
     uint64_t seconds_tick           = 0;
 
     while (g_running.load()) {
@@ -136,6 +137,10 @@ void reporter_loop(mds::Metrics& metrics,
         const uint64_t book_dropped  = orderbook_writer.records_dropped();
         const uint64_t over_500 = metrics.pipeline_over_500us.load(std::memory_order_relaxed);
         const uint64_t over_1000 = metrics.pipeline_over_1000us.load(std::memory_order_relaxed);
+        const uint64_t gaps = metrics.gap_count.load(std::memory_order_relaxed);
+        const uint64_t dups = metrics.duplicate_count.load(std::memory_order_relaxed);
+        const uint64_t missing = metrics.missing_records.load(std::memory_order_relaxed);
+        const uint64_t recovering = metrics.recovering_symbols.load(std::memory_order_relaxed);
         const uint64_t clock_anomaly =
             metrics.clock_anomaly_count.load(std::memory_order_relaxed);
         const uint64_t conn_dur_samples =
@@ -169,6 +174,8 @@ void reporter_loop(mds::Metrics& metrics,
                       << " book_dropped/s=" << (book_dropped - prev_book_dropped)
                       << " parse_err/s=" << (pe - prev_parse_err)
                       << " cb_err/s=" << (ce - prev_cb_err)
+                      << " gap/s=" << (gaps - prev_gap)
+                      << " dup/s=" << (dups - prev_dup)
                       << " over500us/s=" << (over_500 - prev_over_500)
                       << " over1000us/s=" << (over_1000 - prev_over_1000)
                       << " clock_anomaly=" << clock_anomaly
@@ -194,6 +201,8 @@ void reporter_loop(mds::Metrics& metrics,
                       << " book_writer_error=" << (orderbook_writer.has_error() ? "yes" : "no")
                       << " | total: msgs=" << msgs
                       << " trades=" << trades << " books=" << books
+                      << " gap=" << gaps << " dup=" << dups
+                      << " missing=" << missing << " recovering=" << recovering
                       << " trade_written=" << trade_written
                       << " trade_dropped=" << trade_dropped
                       << " book_written=" << book_written
@@ -216,6 +225,8 @@ void reporter_loop(mds::Metrics& metrics,
         prev_cb_err = ce;
         prev_over_500 = over_500;
         prev_over_1000 = over_1000;
+        prev_gap = gaps;
+        prev_dup = dups;
         prev_trade_written = trade_written;
         prev_trade_dropped = trade_dropped;
         prev_book_written = book_written;

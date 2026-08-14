@@ -1,6 +1,7 @@
 #pragma once
 
 #include "websocket_client.h"
+#include "trade_seq_gate.h"
 #include "../config/config.h"
 #include "../common/types.h"
 #include "../monitor/metrics.h"
@@ -10,6 +11,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <string>
+#include <unordered_map>
 
 namespace mds {
 
@@ -36,6 +38,15 @@ public:
     // 离线压测/测试入口：复用 live 模式同一条原始消息解析链路，但不连接网络。
     void process_raw_message(const std::string& msg) { on_raw_message(msg); }
 
+    // 该 symbol 的实时成交当前是否可信。未见过的 symbol 视为 Live（尚未跳号）。
+    bool can_trade(const std::string& symbol) const {
+        const auto it = trade_seq_gates_.find(symbol);
+        if (it == trade_seq_gates_.end()) {
+            return true;
+        }
+        return it->second.can_trade();
+    }
+
 private:
     void reconnect_loop(const std::string& url);
     int64_t calc_backoff_ms(int attempt) const;
@@ -58,6 +69,9 @@ private:
     // on_raw_message，不存在并发，用普通 bool 即可；未来若 io_context 改多 worker
     // 再换回 std::atomic<bool> + compare_exchange。
     bool pin_attempted_ = false;
+
+    // 每个 symbol 一份序列门。on_raw_message 当前单线程进入，无需加锁。
+    std::unordered_map<std::string, TradeSeqGate> trade_seq_gates_;
 
     std::thread reconnect_thread_;
     std::mutex cv_mutex_;
