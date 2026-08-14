@@ -3,7 +3,7 @@
 #
 # 校验思路：
 #   写出去多少（按文件大小反推：trades.bin = 24B header + 56B * N，
-#   orderbooks.bin = 24B header + 664B * M）
+#   orderbooks.bin = 24B header + 672B * M）
 #   == 读回来多少（replay 输出里的 replayed=N）
 # 不依赖 reporter_loop 的 stdout 格式，因为 reporter 在 g_running=false 时
 # 就退出了，writer 在 close 阶段写完队列剩余记录后没有再次打印总数。
@@ -78,10 +78,10 @@ REPLAY_LOG="$BUILD_DIR/e2e_replay.log"
 
 # 与 src/storage/trade_file_format.h 中的 Header / 结构体大小保持一致：
 #   - TradeFileHeader / OrderBookFileHeader：8B magic + 4B version + 4B record_size + 8B record_count = 24
-#   - sizeof(Trade) = 56；sizeof(OrderBookSnapshot) = 664
+#   - sizeof(Trade) = 56；sizeof(OrderBookSnapshot) = 672
 HEADER_SIZE=24
 TRADE_SIZE=56
-BOOK_SIZE=664
+BOOK_SIZE=672
 
 mkdir -p "$BUILD_DIR"
 

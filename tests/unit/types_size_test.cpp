@@ -15,8 +15,8 @@ TEST(TypesSize, OrderBookLevelIs16BytesAnd8ByteAligned) {
     EXPECT_EQ(sizeof(mds::OrderBookLevel) % 8, 0u);
 }
 
-TEST(TypesSize, OrderBookSnapshotIs664BytesAnd8ByteAligned) {
-    EXPECT_EQ(sizeof(mds::OrderBookSnapshot), 664u);
+TEST(TypesSize, OrderBookSnapshotIs672BytesAnd8ByteAligned) {
+    EXPECT_EQ(sizeof(mds::OrderBookSnapshot), 672u);
     EXPECT_EQ(sizeof(mds::OrderBookSnapshot) % 8, 0u);
 }
 

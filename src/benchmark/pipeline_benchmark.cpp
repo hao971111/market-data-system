@@ -86,7 +86,7 @@ std::string make_orderbook_message(const std::string& symbol) {
     }
     const auto sym_lower = lower_symbol(symbol);
     std::ostringstream out;
-    out << "{\"stream\":\"" << sym_lower << "@depth20@100ms\",\"data\":{\"bids\":[";
+    out << "{\"stream\":\"" << sym_lower << "@depth20@100ms\",\"data\":{\"lastUpdateId\":1,\"bids\":[";
     for (int i = 0; i < ORDERBOOK_DEPTH; ++i) {
         if (i != 0) out << ',';
         out << "[\"" << (108160 - i) << ".55000000\",\"0.00040000\"]";

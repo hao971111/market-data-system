@@ -43,7 +43,7 @@ mds::Trade make_trade(int i) {
 
 mds::OrderBookSnapshot make_book(int i) {
     mds::OrderBookSnapshot book{};
-    book.timestamp_us = 1'700'000'000'000'000LL + i;
+    book.recv_ts_us = 1'700'000'000'000'000LL + i;
     book.set_symbol(i % 2 == 0 ? "BTCUSDT" : "ETHUSDT");
     for (int level = 0; level < mds::ORDERBOOK_DEPTH; ++level) {
         book.bids[level].price = 100.0 - level - i * 0.001;
@@ -127,7 +127,7 @@ TEST_F(StorageRoundTripTest, OrderBookWriteRead1000RecordsFieldExact) {
         ASSERT_TRUE(reader.read_next(got)) << "failed at record " << i;
         EXPECT_EQ(std::memcmp(&got, &original[i], sizeof(mds::OrderBookSnapshot)), 0)
             << "mismatch at record " << i;
-        EXPECT_EQ(got.timestamp_us, original[i].timestamp_us);
+        EXPECT_EQ(got.recv_ts_us, original[i].recv_ts_us);
         EXPECT_STREQ(got.symbol, original[i].symbol);
         for (int level = 0; level < mds::ORDERBOOK_DEPTH; ++level) {
             EXPECT_DOUBLE_EQ(got.bids[level].price, original[i].bids[level].price);

@@ -72,6 +72,8 @@ private:
 
     // 每个 symbol 一份序列门。on_raw_message 当前单线程进入，无需加锁。
     std::unordered_map<std::string, TradeSeqGate> trade_seq_gates_;
+    // 每个 symbol 上一帧快照的 lastUpdateId。未出现过则不在 map 里。
+    std::unordered_map<std::string, int64_t> last_orderbook_update_id_;
 
     std::thread reconnect_thread_;
     std::mutex cv_mutex_;

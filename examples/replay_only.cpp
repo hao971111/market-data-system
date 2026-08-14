@@ -54,7 +54,7 @@ int main(int argc, char* argv[]) {
     auto br = replayer.replay_orderbooks([&](const mds::OrderBookSnapshot& ob) {
         ++book_seen;
         if (book_seen <= 3) {
-            std::cout << "[book ] ts=" << ob.timestamp_us
+            std::cout << "[book ] recv_ts=" << ob.recv_ts_us
                       << " " << ob.symbol
                       << " bid=" << ob.best_bid_price()
                       << " ask=" << ob.best_ask_price() << std::endl;

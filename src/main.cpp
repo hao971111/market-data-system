@@ -111,7 +111,7 @@ void reporter_loop(mds::Metrics& metrics,
     uint64_t prev_trade_written = 0, prev_trade_dropped = 0;
     uint64_t prev_book_written = 0, prev_book_dropped = 0;
     uint64_t prev_over_500 = 0, prev_over_1000 = 0;
-    uint64_t prev_gap = 0, prev_dup = 0;
+    uint64_t prev_gap = 0, prev_dup = 0, prev_book_rollback = 0;
     uint64_t seconds_tick           = 0;
 
     while (g_running.load()) {
@@ -141,6 +141,8 @@ void reporter_loop(mds::Metrics& metrics,
         const uint64_t dups = metrics.duplicate_count.load(std::memory_order_relaxed);
         const uint64_t missing = metrics.missing_records.load(std::memory_order_relaxed);
         const uint64_t recovering = metrics.recovering_symbols.load(std::memory_order_relaxed);
+        const uint64_t book_rollback =
+            metrics.orderbook_id_rollback_count.load(std::memory_order_relaxed);
         const uint64_t clock_anomaly =
             metrics.clock_anomaly_count.load(std::memory_order_relaxed);
         const uint64_t conn_dur_samples =
@@ -176,6 +178,7 @@ void reporter_loop(mds::Metrics& metrics,
                       << " cb_err/s=" << (ce - prev_cb_err)
                       << " gap/s=" << (gaps - prev_gap)
                       << " dup/s=" << (dups - prev_dup)
+                      << " book_rollback/s=" << (book_rollback - prev_book_rollback)
                       << " over500us/s=" << (over_500 - prev_over_500)
                       << " over1000us/s=" << (over_1000 - prev_over_1000)
                       << " clock_anomaly=" << clock_anomaly
@@ -203,6 +206,7 @@ void reporter_loop(mds::Metrics& metrics,
                       << " trades=" << trades << " books=" << books
                       << " gap=" << gaps << " dup=" << dups
                       << " missing=" << missing << " recovering=" << recovering
+                      << " book_rollback=" << book_rollback
                       << " trade_written=" << trade_written
                       << " trade_dropped=" << trade_dropped
                       << " book_written=" << book_written
@@ -227,6 +231,7 @@ void reporter_loop(mds::Metrics& metrics,
         prev_over_1000 = over_1000;
         prev_gap = gaps;
         prev_dup = dups;
+        prev_book_rollback = book_rollback;
         prev_trade_written = trade_written;
         prev_trade_dropped = trade_dropped;
         prev_book_written = book_written;
@@ -421,7 +426,7 @@ int run_replay(const mds::Config& config) {
             ++book_cnt;
             if (book_cnt <= HEAD_SAMPLE || book_cnt % BOOK_PRINT_EVERY == 0) {
                 std::cout << "[REPLAY-BOOK] #" << book_cnt
-                          << " ts=" << ob.timestamp_us
+                          << " recv_ts=" << ob.recv_ts_us
                           << " " << ob.symbol
                           << " bid=" << ob.best_bid_price()
                           << " ask=" << ob.best_ask_price()

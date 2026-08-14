@@ -417,6 +417,18 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
         record_segment_us(metrics_.biz_parse_latency, t_after_json, t_after_biz,
                           &metrics_.clock_anomaly_count);
         if (ob) {
+            auto& last_id = last_orderbook_update_id_[symbol];
+            const bool seen = last_id != 0;
+            if (seen && ob->last_update_id < last_id) {
+                metrics_.orderbook_id_rollback_count.fetch_add(
+                    1, std::memory_order_relaxed);
+                std::cerr << "[ConnectionManager] orderbook lastUpdateId rollback "
+                          << symbol << " " << last_id << " -> "
+                          << ob->last_update_id << std::endl;
+                return;
+            }
+            last_id = ob->last_update_id;
+
             metrics_.orderbooks_parsed.fetch_add(1, std::memory_order_relaxed);
             safe_invoke(on_orderbook_, *ob, "orderbook");
             const auto t_after_cb = std::chrono::steady_clock::now();

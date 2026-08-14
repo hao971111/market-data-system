@@ -160,9 +160,19 @@ std::optional<OrderBookSnapshot> Parser::parse_orderbook(const nlohmann::json& j
             return std::nullopt;
         }
 
+        const auto id_it = j.find("lastUpdateId");
+        if (id_it == j.end() || !id_it->is_number_integer()) {
+            return std::nullopt;
+        }
+        const auto last_update_id = id_it->get<int64_t>();
+        if (last_update_id <= 0) {
+            return std::nullopt;
+        }
+
         OrderBookSnapshot snap{};
-        snap.timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        snap.recv_ts_us = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
+        snap.last_update_id = last_update_id;
         // 与 Trade 一致：统一小写，避免大小写分叉
         snap.set_symbol(to_lower_ascii(std::string(symbol)));
 

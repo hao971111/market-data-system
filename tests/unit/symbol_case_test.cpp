@@ -31,7 +31,7 @@ std::string depth_combined(const std::string& stream_sym) {
     }
     nlohmann::json outer = {
         {"stream", stream_sym + "@depth20@100ms"},
-        {"data", {{"bids", levels}, {"asks", levels}}},
+        {"data", {{"lastUpdateId", 1}, {"bids", levels}, {"asks", levels}}},
     };
     return outer.dump();
 }
@@ -51,6 +51,7 @@ TEST(SymbolCase, TradeAndOrderBookShareLowerSymbol) {
     });
     const auto book = mds::Parser::parse_orderbook(
         nlohmann::json{
+            {"lastUpdateId", 1},
             {"bids", nlohmann::json::array({{"1.0", "1.0"}})},
             {"asks", nlohmann::json::array({{"1.1", "1.0"}})},
         },
