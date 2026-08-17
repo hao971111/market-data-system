@@ -10,7 +10,8 @@ namespace mds {
 
 // Trade - 逐笔成交数据（固定布局，适合高效二进制写入/回放）
 //
-// 落盘格式 version=2。旧 data/trades.bin（version=1 / 56 字节记录）不兼容。
+// 落盘格式 version=2。按 UTC 小时切分 trades_YYYYMMDD_HH.bin。
+// 旧 data/trades.bin（version=1 / 56 字节记录）不兼容。
 // crc32 预留给 Step 16，当前恒为 0，不参与校验。
 struct Trade {
     int64_t exchange_ts_us;  // 交易所报文时间（微秒）
@@ -50,7 +51,8 @@ constexpr int ORDERBOOK_DEPTH = 20;
 //   - exchange_ts_us 对 depth20 快照恒为 0（报文没有交易所时间）
 //   - last_update_id 来自报文 lastUpdateId，只用来检查回退
 //
-// 落盘格式 version=2。旧 data/orderbooks.bin 不兼容。
+// 落盘格式 version=2。按 UTC 小时切分 orderbooks_YYYYMMDD_HH.bin。
+// 旧 data/orderbooks.bin 不兼容。
 // crc32 预留给 Step 16，当前恒为 0。
 struct OrderBookSnapshot {
     int64_t exchange_ts_us;

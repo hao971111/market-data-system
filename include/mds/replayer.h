@@ -46,11 +46,11 @@ public:
     Replayer(Replayer&&) noexcept;
     Replayer& operator=(Replayer&&) noexcept;
 
-    // 顺序回放 data_dir/trades.bin。
+    // 顺序回放 data_dir 下全部 trades_*.bin（含旧的 trades.bin）。
     // 空回调 / 回调抛异常会被记入 Result.callback_error，并提前中断回放。
     Result replay_trades(TradeCallback callback);
 
-    // 顺序回放 data_dir/orderbooks.bin。语义同上。
+    // 顺序回放 data_dir 下全部 orderbooks_*.bin。语义同上。
     Result replay_orderbooks(OrderBookCallback callback);
 
     // 构造时传入的数据目录，仅用于诊断。

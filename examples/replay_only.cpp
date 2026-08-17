@@ -7,7 +7,7 @@
 //   ./build/replay_only [data_dir]
 //   缺省 data_dir 为 "./data"。
 //
-// 运行前需要先用主程序至少跑过一次 live 模式产出 trades.bin / orderbooks.bin，
+// 运行前需要先用主程序至少跑过一次 live 模式产出 trades_YYYYMMDD_HH.bin，
 // 例如：./build/market-data-system 然后 Ctrl+C。
 
 #include <cstdint>

@@ -2,8 +2,8 @@
 # 端到端整合测试：live 接收 N 秒 → SIGINT 退出 → --replay 回放 → 比对计数
 #
 # 校验思路：
-#   写出去多少（按文件大小反推：trades.bin = 24B header + 64B * N，
-#   orderbooks.bin = 24B header + 688B * M）
+#   写出去多少（按文件大小反推：每个 trades_*.bin = 24B header + 64B * N，
+#   每个 orderbooks_*.bin = 24B header + 688B * M，多文件求和）
 #   == 读回来多少（replay 输出里的 replayed=N）
 # 不依赖 reporter_loop 的 stdout 格式，因为 reporter 在 g_running=false 时
 # 就退出了，writer 在 close 阶段写完队列剩余记录后没有再次打印总数。
@@ -92,7 +92,8 @@ fi
 
 if [[ $SKIP_LIVE -eq 0 ]]; then
     echo "[E2E] Cleaning previous data files..."
-    rm -f "$DATA_DIR/trades.bin" "$DATA_DIR/orderbooks.bin"
+    rm -f "$DATA_DIR"/trades.bin "$DATA_DIR"/orderbooks.bin
+    rm -f "$DATA_DIR"/trades_*.bin "$DATA_DIR"/orderbooks_*.bin
 
     echo "[E2E] Starting live mode for ${DURATION}s (log: $LIVE_LOG)..."
     cd "$ROOT"
@@ -143,30 +144,40 @@ if [[ $SKIP_LIVE -eq 0 ]]; then
     echo "[E2E] Live mode finished."
 fi
 
-if [[ ! -f "$DATA_DIR/trades.bin" || ! -f "$DATA_DIR/orderbooks.bin" ]]; then
-    echo "[E2E] FAIL: expected binary files not found in $DATA_DIR" >&2
-    exit 1
-fi
+sum_record_files() {
+    local kind="$1"
+    local rec_size="$2"
+    local total=0
+    local files=()
+    local f sz
+    if [[ -f "$DATA_DIR/${kind}.bin" ]]; then
+        files+=("$DATA_DIR/${kind}.bin")
+    fi
+    shopt -s nullglob
+    files+=("$DATA_DIR"/${kind}_*.bin)
+    shopt -u nullglob
+    if [[ ${#files[@]} -eq 0 ]]; then
+        echo "[E2E] FAIL: no ${kind} record files in $DATA_DIR" >&2
+        return 1
+    fi
+    for f in "${files[@]}"; do
+        sz=$(stat -c%s "$f")
+        if [[ $sz -lt $HEADER_SIZE ]]; then
+            echo "[E2E] FAIL: $f smaller than header size; corrupt write?" >&2
+            return 1
+        fi
+        if (( (sz - HEADER_SIZE) % rec_size != 0 )); then
+            echo "[E2E] FAIL: $f body not divisible by ${rec_size} (truncated record)" >&2
+            return 1
+        fi
+        total=$(( total + (sz - HEADER_SIZE) / rec_size ))
+    done
+    echo "$total"
+    return 0
+}
 
-trade_size_bytes=$(stat -c%s "$DATA_DIR/trades.bin")
-book_size_bytes=$(stat -c%s "$DATA_DIR/orderbooks.bin")
-
-if [[ $trade_size_bytes -lt $HEADER_SIZE || $book_size_bytes -lt $HEADER_SIZE ]]; then
-    echo "[E2E] FAIL: file smaller than header size; corrupt write?" >&2
-    exit 1
-fi
-
-if (( (trade_size_bytes - HEADER_SIZE) % TRADE_SIZE != 0 )); then
-    echo "[E2E] FAIL: trades.bin body not divisible by ${TRADE_SIZE} (truncated record)" >&2
-    exit 1
-fi
-if (( (book_size_bytes - HEADER_SIZE) % BOOK_SIZE != 0 )); then
-    echo "[E2E] FAIL: orderbooks.bin body not divisible by ${BOOK_SIZE} (truncated record)" >&2
-    exit 1
-fi
-
-trade_disk=$(( (trade_size_bytes - HEADER_SIZE) / TRADE_SIZE ))
-book_disk=$(( (book_size_bytes - HEADER_SIZE) / BOOK_SIZE ))
+trade_disk=$(sum_record_files "trades" "$TRADE_SIZE") || exit 1
+book_disk=$(sum_record_files "orderbooks" "$BOOK_SIZE") || exit 1
 echo "[E2E] On-disk count: trades=$trade_disk orderbooks=$book_disk"
 
 if [[ $trade_disk -eq 0 && $book_disk -eq 0 ]]; then

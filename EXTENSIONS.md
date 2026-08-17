@@ -75,8 +75,8 @@
 - **方向**：SPSC/低锁队列、可配置批量写、写入延迟进 metrics
 
 ### E2. 文件切分与索引
-- **现状**：启动覆盖写单个 `trades.bin` / `orderbooks.bin`
-- **方向**：按日期/小时/symbol 分文件 + 时间索引，便于范围回放
+- **现状**：按 UTC 小时切分 `trades_YYYYMMDD_HH.bin` / `orderbooks_YYYYMMDD_HH.bin`；同小时重启追加；Reader 按文件名顺序读。旧单文件仍可回放。
+- **方向**：按 symbol 再切 + 时间索引，便于范围回放
 
 ### E3. 完整性增强
 - **现状**：header 有 magic/version/record_size，并回填 `record_count`；回放可做计数校验

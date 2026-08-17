@@ -21,7 +21,8 @@ struct FeedConfig {
     // HTTP CONNECT 代理 URL。空 = 直连，会进一步 fallback 到 https_proxy / HTTPS_PROXY 环境变量。
     std::string proxy_url;
 
-    // 落盘目录。空字符串 = 不落盘（仅触发回调）；非空 = 自动写 data_dir/trades.bin、data_dir/orderbooks.bin。
+    // 落盘目录。空字符串 = 不落盘（仅触发回调）；非空 = 按小时写
+    // data_dir/trades_YYYYMMDD_HH.bin、data_dir/orderbooks_YYYYMMDD_HH.bin。
     std::string data_dir = "./data";
 
     // 重连 / 心跳参数（毫秒）。
@@ -60,7 +61,7 @@ struct MetricsSnapshot {
 //   ...
 //   feed.stop();
 //
-// 落盘：FeedConfig::data_dir 非空时自动写 trades.bin / orderbooks.bin；
+// 落盘：FeedConfig::data_dir 非空时按 UTC 小时写 trades_*.bin / orderbooks_*.bin；
 //       置空则只回调、不落盘。
 //
 // 线程模型：start() 后内部启动 IO 线程；用户回调（on_trade / on_orderbook）

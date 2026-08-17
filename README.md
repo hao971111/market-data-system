@@ -9,7 +9,7 @@
 
 - 实时接入 Binance WebSocket 行情（Trade / OrderBook）
 - 自动重连、心跳、代理支持
-- 二进制异步落盘（`trades.bin` / `orderbooks.bin`）
+- 二进制异步落盘（按 UTC 小时切分 `trades_YYYYMMDD_HH.bin` / `orderbooks_YYYYMMDD_HH.bin`）
 - 历史数据回放
 - 运行时指标统计（吞吐、丢包、连接、延迟相关计数）
 

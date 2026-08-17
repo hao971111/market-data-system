@@ -6,7 +6,8 @@
 namespace mds {
 
 struct TradeFileHeader {
-    static constexpr const char* file_name = "trades.bin";
+    static constexpr const char* file_prefix = "trades";
+    static constexpr const char* file_name = "trades.bin";  // 旧单文件名，Reader 仍识别
 
     char     magic[8] = {'M', 'D', 'S', 'T', 'R', 'D', '1', '\0'};
     uint32_t version = 2;
@@ -23,7 +24,8 @@ struct TradeFileHeader {
 };
 
 struct OrderBookFileHeader {
-    static constexpr const char* file_name = "orderbooks.bin";
+    static constexpr const char* file_prefix = "orderbooks";
+    static constexpr const char* file_name = "orderbooks.bin";  // 旧单文件名，Reader 仍识别
 
     char     magic[8] = {'M', 'D', 'S', 'O', 'B', 'K', '1', '\0'};
     uint32_t version = 2;

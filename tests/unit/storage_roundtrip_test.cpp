@@ -2,6 +2,7 @@
 #include "storage/binary_order_book_writer.h"
 #include "storage/binary_trade_reader.h"
 #include "storage/binary_trade_writer.h"
+#include "storage/file_roll.h"
 #include "storage/trade_file_format.h"
 
 #include <cstddef>
@@ -32,6 +33,12 @@ protected:
 
     std::filesystem::path dir_;
 };
+
+std::filesystem::path only_trade_file(const std::filesystem::path& dir) {
+    const auto files = mds::list_record_files(dir, mds::TradeFileHeader::file_prefix,
+                                              mds::TradeFileHeader::file_name);
+    return files.size() == 1 ? files.front() : std::filesystem::path{};
+}
 
 mds::Trade make_trade(int i) {
     mds::Trade t{};
@@ -158,7 +165,8 @@ TEST_F(StorageRoundTripTest, ReaderRejectsVersion1Header) {
     }
 
     {
-        std::fstream f(dir_ / mds::TradeFileHeader::file_name,
+        ASSERT_FALSE(only_trade_file(dir_).empty());
+        std::fstream f(only_trade_file(dir_),
                        std::ios::binary | std::ios::in | std::ios::out);
         ASSERT_TRUE(f.is_open());
         f.seekp(static_cast<std::streamoff>(offsetof(mds::TradeFileHeader, version)));
@@ -169,4 +177,110 @@ TEST_F(StorageRoundTripTest, ReaderRejectsVersion1Header) {
 
     mds::BinaryTradeReader reader;
     EXPECT_FALSE(reader.open(dir_.string()));
+}
+
+TEST_F(StorageRoundTripTest, SameHourRestartAppendsWithoutTrunc) {
+    auto a = make_trade(0);
+    auto b = make_trade(1);
+    {
+        mds::BinaryTradeWriter writer;
+        ASSERT_TRUE(writer.open(dir_.string(), 16));
+        ASSERT_TRUE(writer.write(a));
+        writer.close();
+        EXPECT_EQ(writer.records_written(), 1u);
+    }
+    {
+        mds::BinaryTradeWriter writer;
+        ASSERT_TRUE(writer.open(dir_.string(), 16));
+        ASSERT_TRUE(writer.write(b));
+        writer.close();
+        EXPECT_EQ(writer.records_written(), 1u);
+    }
+
+    const auto files = mds::list_record_files(
+        dir_, mds::TradeFileHeader::file_prefix, mds::TradeFileHeader::file_name);
+    ASSERT_EQ(files.size(), 1u);
+
+    mds::BinaryTradeReader reader;
+    ASSERT_TRUE(reader.open(dir_.string()));
+    EXPECT_EQ(reader.get_record_count(), 2u);
+    mds::Trade got{};
+    ASSERT_TRUE(reader.read_next(got));
+    EXPECT_EQ(got.trade_id, a.trade_id);
+    ASSERT_TRUE(reader.read_next(got));
+    EXPECT_EQ(got.trade_id, b.trade_id);
+    EXPECT_FALSE(reader.read_next(got));
+}
+
+TEST_F(StorageRoundTripTest, HourBoundaryCreatesTwoFilesAndReaderConcatenates) {
+    constexpr int64_t kHourUs = 3'600'000'000LL;
+    auto first = make_trade(0);
+    auto second = make_trade(1);
+    second.recv_ts_us = first.recv_ts_us + kHourUs;
+    second.exchange_ts_us = first.exchange_ts_us + kHourUs;
+
+    {
+        mds::BinaryTradeWriter writer;
+        ASSERT_TRUE(writer.open(dir_.string(), 16));
+        ASSERT_TRUE(writer.write(first));
+        ASSERT_TRUE(writer.write(second));
+        writer.close();
+        EXPECT_EQ(writer.records_written(), 2u);
+        EXPECT_FALSE(writer.has_error());
+    }
+
+    const auto files = mds::list_record_files(
+        dir_, mds::TradeFileHeader::file_prefix, mds::TradeFileHeader::file_name);
+    ASSERT_EQ(files.size(), 2u);
+    EXPECT_EQ(files[0].filename().string(),
+              mds::hourly_file_name("trades", first.recv_ts_us));
+    EXPECT_EQ(files[1].filename().string(),
+              mds::hourly_file_name("trades", second.recv_ts_us));
+
+    mds::BinaryTradeReader reader;
+    ASSERT_TRUE(reader.open(dir_.string()));
+    EXPECT_EQ(reader.get_record_count(), 2u);
+
+    mds::Trade got{};
+    ASSERT_TRUE(reader.read_next(got));
+    EXPECT_EQ(got.trade_id, first.trade_id);
+    EXPECT_EQ(got.recv_ts_us, first.recv_ts_us);
+    ASSERT_TRUE(reader.read_next(got));
+    EXPECT_EQ(got.trade_id, second.trade_id);
+    EXPECT_EQ(got.recv_ts_us, second.recv_ts_us);
+    EXPECT_FALSE(reader.read_next(got));
+    EXPECT_FALSE(reader.has_error());
+}
+
+TEST_F(StorageRoundTripTest, RestartKeepsPreviousHourFile) {
+    constexpr int64_t kHourUs = 3'600'000'000LL;
+    auto hour_a = make_trade(0);
+    auto hour_b = make_trade(1);
+    hour_b.recv_ts_us = hour_a.recv_ts_us + kHourUs;
+
+    {
+        mds::BinaryTradeWriter writer;
+        ASSERT_TRUE(writer.open(dir_.string(), 16));
+        ASSERT_TRUE(writer.write(hour_a));
+        writer.close();
+    }
+    {
+        mds::BinaryTradeWriter writer;
+        ASSERT_TRUE(writer.open(dir_.string(), 16));
+        ASSERT_TRUE(writer.write(hour_b));
+        writer.close();
+    }
+
+    const auto files = mds::list_record_files(
+        dir_, mds::TradeFileHeader::file_prefix, mds::TradeFileHeader::file_name);
+    ASSERT_EQ(files.size(), 2u);
+
+    mds::BinaryTradeReader reader;
+    ASSERT_TRUE(reader.open(dir_.string()));
+    EXPECT_EQ(reader.get_record_count(), 2u);
+    mds::Trade got{};
+    ASSERT_TRUE(reader.read_next(got));
+    EXPECT_EQ(got.trade_id, hour_a.trade_id);
+    ASSERT_TRUE(reader.read_next(got));
+    EXPECT_EQ(got.trade_id, hour_b.trade_id);
 }

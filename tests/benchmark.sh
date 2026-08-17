@@ -312,7 +312,8 @@ SUMMARY_MD="$BUILD_DIR/benchmark_summary.md"
 ROW_MD="$BUILD_DIR/benchmark_row.md"
 
 echo "[BENCH] Cleaning previous data files..."
-rm -f "$DATA_DIR/trades.bin" "$DATA_DIR/orderbooks.bin"
+rm -f "$DATA_DIR"/trades.bin "$DATA_DIR"/orderbooks.bin
+rm -f "$DATA_DIR"/trades_*.bin "$DATA_DIR"/orderbooks_*.bin
 
 echo "[BENCH] Starting live mode for ${DURATION}s (log: $LIVE_LOG)..."
 cd "$ROOT"

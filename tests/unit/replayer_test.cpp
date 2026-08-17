@@ -1,5 +1,6 @@
 #include "mds/replayer.h"
 #include "storage/binary_trade_writer.h"
+#include "storage/file_roll.h"
 #include "storage/trade_file_format.h"
 
 #include <cstdint>
@@ -27,7 +28,9 @@ protected:
     }
 
     std::filesystem::path trades_path() const {
-        return dir_ / mds::TradeFileHeader::file_name;
+        const auto files = mds::list_record_files(
+            dir_, mds::TradeFileHeader::file_prefix, mds::TradeFileHeader::file_name);
+        return files.empty() ? dir_ / "missing.bin" : files.front();
     }
 
     void write_trades(int count) {
@@ -36,6 +39,7 @@ protected:
         for (int i = 0; i < count; ++i) {
             mds::Trade t{};
             t.exchange_ts_us = 1'700'000'000'000'000LL + i;
+            t.recv_ts_us = t.exchange_ts_us;
             t.trade_id = i + 1;
             t.price = 100.0 + i;
             t.quantity = 0.01 * (i + 1);

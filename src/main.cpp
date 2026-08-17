@@ -4,7 +4,7 @@
  *
  * 系统功能：
  * 1. live 模式（默认）：从 Binance WebSocket 接入实时行情 → 缓存 → 二进制落盘
- * 2. replay 模式（--replay）：从磁盘读取 trades.bin / orderbooks.bin 顺序回放
+ * 2. replay 模式（--replay）：从磁盘按时间序回放 trades_YYYYMMDD_HH.bin / orderbooks_*.bin
  */
 
 #include <atomic>
@@ -273,7 +273,7 @@ void reporter_loop(mds::Metrics& metrics,
 // 回调 lambda 捕获的引用始终有效。
 int run_live(const mds::Config& config) {
     // 进入 live 之前先把"必填配置"挡掉。放在 writer.open 之前，避免无谓地
-    // 创建空的 trades.bin / orderbooks.bin。
+    // 创建空的小时文件。
     // 注意：默认 Config 自带一个 binance_main 数据源，所以正常情况下 size>=1；
     // 这里挡的是用户在 config.json 里显式写 "data_sources": [] 的边界情况。
     if (config.data_sources.empty()) {
@@ -401,7 +401,7 @@ int run_live(const mds::Config& config) {
     return 0;
 }
 
-// replay 模式：从 data_dir 顺序读出 trades.bin / orderbooks.bin
+// replay 模式：从 data_dir 按时间序读出小时切分的 trade / orderbook 文件
 //
 // 数据量可能很大（一晚上几十万条），全打 stdout 会刷屏，所以每 print_every 条
 // 才打一行；前 5 条总是打，便于人工肉眼快速 sanity check。
