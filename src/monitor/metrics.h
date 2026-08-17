@@ -70,11 +70,19 @@ struct Metrics {
     std::atomic<uint64_t> orderbook_enqueue_us_max{0};
 
     // 时间戳分层（Step 13）
-    //   trade_latency     ：exchange_ts → recv_ts（system_clock，仅 Trade）
+    //   trade_latency     ：exchange_ts → recv_ts + clock_offset（system_clock，仅 Trade）
     //   recv_to_app_latency：recv → 进回调（steady_clock，不受 NTP 影响）
     // OrderBook depth20 没有交易所时间，不记 trade_latency。
     LatencyHistogram trade_latency;
     LatencyHistogram recv_to_app_latency;
+
+    // 交易所时钟校准（Step 14）。offset 只修正 LATENCY_EXT，不改落盘时间戳。
+    std::atomic<int64_t> clock_offset_us{0};          // 最近一次合格 offset；未就绪为 0
+    std::atomic<uint64_t> clock_offset_ready{0};      // 1=至少成功过一次
+    std::atomic<uint64_t> clock_sync_ok{0};           // 合格样本数
+    std::atomic<uint64_t> clock_sync_fail{0};         // 作废样本数（传输/解析/RTT/偏移）
+    std::atomic<uint64_t> clock_sync_rtt_us{0};       // 最近一次合格样本的 RTT
+    std::atomic<uint64_t> ext_latency_negative_drop{0};  // 加 offset 后仍为负的样本
 
     // 内部处理延迟（on_raw_message 进入 → 函数退出）
     // 口径：使用 steady_clock，只衡量本进程内部的 JSON 解析、结构体解析、

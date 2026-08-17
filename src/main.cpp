@@ -148,6 +148,16 @@ void reporter_loop(mds::Metrics& metrics,
             metrics.orderbook_id_rollback_count.load(std::memory_order_relaxed);
         const uint64_t clock_anomaly =
             metrics.clock_anomaly_count.load(std::memory_order_relaxed);
+        const int64_t clock_offset_us =
+            metrics.clock_offset_us.load(std::memory_order_relaxed);
+        const uint64_t clock_ready =
+            metrics.clock_offset_ready.load(std::memory_order_relaxed);
+        const uint64_t clock_sync_fail =
+            metrics.clock_sync_fail.load(std::memory_order_relaxed);
+        const uint64_t clock_rtt_us =
+            metrics.clock_sync_rtt_us.load(std::memory_order_relaxed);
+        const uint64_t ext_neg_drop =
+            metrics.ext_latency_negative_drop.load(std::memory_order_relaxed);
         const uint64_t conn_dur_samples =
             metrics.connect_duration_samples.load(std::memory_order_relaxed);
         const uint64_t conn_dur_total_ms =
@@ -185,6 +195,11 @@ void reporter_loop(mds::Metrics& metrics,
                       << " over500us/s=" << (over_500 - prev_over_500)
                       << " over1000us/s=" << (over_1000 - prev_over_1000)
                       << " clock_anomaly=" << clock_anomaly
+                      << " clock_ready=" << clock_ready
+                      << " clock_offset_us=" << clock_offset_us
+                      << " clock_rtt_us=" << clock_rtt_us
+                      << " clock_sync_fail=" << clock_sync_fail
+                      << " ext_neg_drop=" << ext_neg_drop
                       << " | conn=" << conn_ok << "/" << conn_at
                       << " conn_ms(avg/max)="
                       << (conn_dur_samples ? (conn_dur_total_ms / conn_dur_samples) : 0)

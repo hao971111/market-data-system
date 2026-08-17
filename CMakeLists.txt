@@ -71,6 +71,7 @@ endif()
 set(MDS_CORE_SOURCES
     src/network/connection_manager.cpp
     src/network/websocket_client.cpp
+    src/network/https_client.cpp
     src/parser/parser.cpp
     src/monitor/cpu_affinity.cpp
     src/benchmark/pipeline_benchmark.cpp

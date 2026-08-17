@@ -1,4 +1,5 @@
 #include "connection_manager.h"
+#include "https_client.h"
 #include "../monitor/cpu_affinity.h"
 #include "../parser/parser.h"
 #include <chrono>
@@ -105,8 +106,10 @@ ConnectionManager::~ConnectionManager() {
 }
 
 void ConnectionManager::start(const std::string& url) {
-    // 严重-2修复：防重入，已启动则忽略
     if (running_.exchange(true)) return;
+    if (!config_.rest_api_url.empty()) {
+        clock_sync_thread_ = std::thread([this]() { clock_sync_loop(); });
+    }
     reconnect_thread_ = std::thread([this, url]() {
         reconnect_loop(url);
     });
@@ -125,8 +128,85 @@ void ConnectionManager::stop() {
     }
     
     cv_.notify_all();  // 兜底：覆盖"正在退避等待"的场景
+    clock_cv_.notify_all();
     if (reconnect_thread_.joinable()) {
         reconnect_thread_.join();
+    }
+    if (clock_sync_thread_.joinable()) {
+        clock_sync_thread_.join();
+    }
+}
+
+void ConnectionManager::clock_sync_loop() {
+    std::string time_url = config_.rest_api_url;
+    while (!time_url.empty() && time_url.back() == '/') {
+        time_url.pop_back();
+    }
+    time_url += "/api/v3/time";
+
+    int fail_streak = 0;
+    bool logged_ok = false;
+
+    while (running_) {
+        const int64_t t_send = wall_us_now();
+        const auto resp = http_get(time_url, config_.proxy_url,
+                                   std::chrono::milliseconds{3000});
+        const int64_t t_recv = wall_us_now();
+
+        ClockOffsetCalibrator::Result r;
+        if (!resp.ok) {
+            r = clock_calibrator_.on_transport_failure();
+        } else {
+            const auto server_us = parse_binance_server_time_us(resp.body);
+            r = clock_calibrator_.on_sample(t_send, t_recv, server_us.value_or(0));
+        }
+
+        metrics_.clock_offset_us.store(clock_calibrator_.offset_us(),
+                                       std::memory_order_relaxed);
+        metrics_.clock_offset_ready.store(clock_calibrator_.has_offset() ? 1u : 0u,
+                                          std::memory_order_relaxed);
+        metrics_.clock_sync_ok.store(clock_calibrator_.accept_count(),
+                                     std::memory_order_relaxed);
+        metrics_.clock_sync_fail.store(clock_calibrator_.fail_count(),
+                                       std::memory_order_relaxed);
+        const int64_t rtt = clock_calibrator_.last_rtt_us();
+        metrics_.clock_sync_rtt_us.store(rtt < 0 ? 0 : static_cast<uint64_t>(rtt),
+                                         std::memory_order_relaxed);
+
+        if (r.reason == ClockOffsetCalibrator::Reason::Accepted) {
+            fail_streak = 0;
+            if (!logged_ok) {
+                logged_ok = true;
+                std::cout << "[ClockSync] offset_us=" << clock_calibrator_.offset_us()
+                          << " rtt_us=" << r.rtt_us << std::endl;
+            }
+        } else {
+            ++fail_streak;
+            if (fail_streak == 1 || fail_streak % 10 == 0) {
+                std::cerr << "[ClockSync] sample rejected: "
+                          << ClockOffsetCalibrator::reason_name(r.reason);
+                if (!resp.ok && !resp.error.empty()) {
+                    std::cerr << " (" << resp.error << ")";
+                }
+                std::cerr << " rtt_us=" << r.rtt_us;
+                if (clock_calibrator_.has_offset()) {
+                    std::cerr << " keeping last offset_us="
+                              << clock_calibrator_.offset_us();
+                } else {
+                    std::cerr << " uncalibrated";
+                }
+                std::cerr << std::endl;
+            }
+        }
+
+        int64_t wait_ms = 30'000;
+        if (fail_streak > 0) {
+            const int shift = std::min(fail_streak - 1, 4);
+            wait_ms = std::min(int64_t{300'000}, int64_t{30'000} << shift);
+        }
+        std::unique_lock<std::mutex> lock(clock_cv_mutex_);
+        clock_cv_.wait_for(lock, std::chrono::milliseconds(wait_ms),
+                           [this]() { return !running_.load(); });
     }
 }
 
@@ -404,12 +484,16 @@ void ConnectionManager::on_raw_message(const std::string& msg) {
             stamp_recv(*t, recv_ts_us);
             record_segment_us(metrics_.recv_to_app_latency, t_enter, t_after_biz,
                               &metrics_.clock_anomaly_count);
-            // exchange → recv：两边都是 wall-clock。本机落后交易所时差值为负，丢弃
-            // （record 接 uint64_t，负值会爆 max）。Step 14 再做时钟偏移校准。
+            // exchange → recv：recv 加上校准 offset 后再减交易所时间。
+            // 从未校准过时 offset=0，和以前一样丢掉负数，避免 uint64 溢出。
             if (t->exchange_ts_us > 0) {
-                const int64_t lat_us = t->recv_ts_us - t->exchange_ts_us;
-                if (lat_us >= 0) {
-                    metrics_.trade_latency.record(static_cast<uint64_t>(lat_us));
+                const auto lat = exchange_to_recv_us(
+                    t->exchange_ts_us, t->recv_ts_us, clock_calibrator_.offset_us());
+                if (lat) {
+                    metrics_.trade_latency.record(*lat);
+                } else {
+                    metrics_.ext_latency_negative_drop.fetch_add(
+                        1, std::memory_order_relaxed);
                 }
             }
             metrics_.trades_parsed.fetch_add(1, std::memory_order_relaxed);

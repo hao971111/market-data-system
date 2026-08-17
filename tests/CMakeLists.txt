@@ -25,6 +25,9 @@ add_executable(mds_unit_tests
     unit/symbol_case_test.cpp
     unit/trade_seq_gate_test.cpp
     unit/trade_seq_cm_test.cpp
+    unit/clock_offset_test.cpp
+    unit/https_client_test.cpp
+    unit/clock_cm_test.cpp
 )
 
 target_include_directories(mds_unit_tests

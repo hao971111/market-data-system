@@ -2,11 +2,13 @@
 
 #include "websocket_client.h"
 #include "trade_seq_gate.h"
+#include "clock_offset.h"
 #include "../config/config.h"
 #include "../common/types.h"
 #include "../monitor/metrics.h"
 #include <functional>
 #include <atomic>
+#include <memory>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -78,6 +80,13 @@ private:
     std::thread reconnect_thread_;
     std::mutex cv_mutex_;
     std::condition_variable cv_;
+
+    ClockOffsetCalibrator clock_calibrator_;
+    std::thread clock_sync_thread_;
+    std::mutex clock_cv_mutex_;
+    std::condition_variable clock_cv_;
+
+    void clock_sync_loop();
 };
 
 }  // namespace mds
