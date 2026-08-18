@@ -1,7 +1,14 @@
 #pragma once
 
 #include "../common/types.h"
+
+#include <cstddef>
 #include <cstdint>
+
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)
+static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
+              "binary record files are little-endian");
+#endif
 
 namespace mds {
 
@@ -12,7 +19,7 @@ struct TradeFileHeader {
     char     magic[8] = {'M', 'D', 'S', 'T', 'R', 'D', '1', '\0'};
     uint32_t version = 2;
     uint32_t record_size = sizeof(Trade);
-    // 写盘完成后由 BinaryRecordWriter::close() 回填；0 表示异常中止或旧格式文件
+    // 写盘过程中周期性回填；0 表示异常中止或尚未写入记录
     uint64_t record_count = 0;
 
     void set_record_count(uint64_t n) { record_count = n; }
@@ -30,7 +37,7 @@ struct OrderBookFileHeader {
     char     magic[8] = {'M', 'D', 'S', 'O', 'B', 'K', '1', '\0'};
     uint32_t version = 2;
     uint32_t record_size = sizeof(OrderBookSnapshot);
-    // 写盘完成后由 BinaryRecordWriter::close() 回填；0 表示异常中止或旧格式文件
+    // 写盘过程中周期性回填；0 表示异常中止或尚未写入记录
     uint64_t record_count = 0;
 
     void set_record_count(uint64_t n) { record_count = n; }

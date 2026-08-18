@@ -79,9 +79,8 @@
 - **方向**：按 symbol 再切 + 时间索引，便于范围回放
 
 ### E3. 完整性增强
-- **现状**：header 有 magic/version/record_size，并回填 `record_count`；回放可做计数校验
-- **缺口**：无 checksum/CRC；损坏尾部只能读失败，不能自动截断修复
-- **方向**：块级 CRC；启动扫描并截断半条记录
+- **现状**：每条记录带 IEEE CRC-32；Writer 打开时截掉损坏尾巴并回填 `record_count`；Reader 把尾部半条当 EOF，中间 CRC 错当损坏
+- **缺口**：无独立块头；旧记录 `crc32==0` 不校验
 
 ---
 

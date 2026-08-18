@@ -3,6 +3,7 @@
 #include "storage/file_roll.h"
 #include "storage/trade_file_format.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -100,7 +101,6 @@ TEST_F(ReplayerTest, DetectsTruncatedFile) {
     write_trades(3);
 
     const auto full_size = sizeof(mds::TradeFileHeader) + 3 * sizeof(mds::Trade);
-    // 截断到第 3 条的一半，触发 truncated record → file_error
     const auto truncated_size =
         sizeof(mds::TradeFileHeader) + 2 * sizeof(mds::Trade) + sizeof(mds::Trade) / 2;
     ASSERT_LT(truncated_size, full_size);
@@ -112,9 +112,33 @@ TEST_F(ReplayerTest, DetectsTruncatedFile) {
 
     EXPECT_EQ(seen, 2);
     EXPECT_EQ(result.records_replayed, 2u);
-    EXPECT_TRUE(result.file_error);
+    EXPECT_FALSE(result.file_error);
     EXPECT_FALSE(result.callback_error);
-    // file_error 时不额外标 count_mismatch（实现约定）
+    // header 仍写着 3，尾巴被当成崩溃残留丢掉
+    EXPECT_EQ(result.header_record_count, 3u);
+    EXPECT_TRUE(result.count_mismatch);
+    EXPECT_FALSE(result.completed);
+}
+
+TEST_F(ReplayerTest, CrcMismatchIsFileError) {
+    write_trades(3);
+    std::fstream file(trades_path(), std::ios::binary | std::ios::in | std::ios::out);
+    ASSERT_TRUE(file.is_open());
+    file.seekp(static_cast<std::streamoff>(
+        sizeof(mds::TradeFileHeader) + sizeof(mds::Trade) +
+        offsetof(mds::Trade, price)));
+    const char flip = 0x7F;
+    file.write(&flip, 1);
+    ASSERT_TRUE(file.good());
+    file.close();
+
+    mds::Replayer replayer(dir_.string());
+    int seen = 0;
+    const auto result = replayer.replay_trades([&](const mds::Trade&) { ++seen; });
+
+    EXPECT_EQ(seen, 1);
+    EXPECT_EQ(result.records_replayed, 1u);
+    EXPECT_TRUE(result.file_error);
     EXPECT_FALSE(result.count_mismatch);
     EXPECT_FALSE(result.completed);
 }

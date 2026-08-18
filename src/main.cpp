@@ -296,6 +296,13 @@ int run_live(const mds::Config& config) {
     if (!orderbook_writer.open(config.data_dir, config.ring_buffer_size)) {
         return 1;
     }
+    if (trade_writer.tail_bytes_discarded() > 0 ||
+        orderbook_writer.tail_bytes_discarded() > 0) {
+        std::cerr << "[WARN] Recovered damaged file tails: trade_bytes="
+                  << trade_writer.tail_bytes_discarded()
+                  << " orderbook_bytes="
+                  << orderbook_writer.tail_bytes_discarded() << std::endl;
+    }
 
     mds::TradeRingBuffer     trade_cache(config.ring_buffer_size);
     mds::OrderBookRingBuffer orderbook_cache(config.ring_buffer_size);

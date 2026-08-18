@@ -3,6 +3,7 @@
 #include "storage/binary_trade_reader.h"
 #include "storage/binary_trade_writer.h"
 #include "storage/file_roll.h"
+#include "storage/record_integrity.h"
 #include "storage/trade_file_format.h"
 
 #include <cstddef>
@@ -38,6 +39,15 @@ std::filesystem::path only_trade_file(const std::filesystem::path& dir) {
     const auto files = mds::list_record_files(dir, mds::TradeFileHeader::file_prefix,
                                               mds::TradeFileHeader::file_name);
     return files.size() == 1 ? files.front() : std::filesystem::path{};
+}
+
+template <typename T>
+bool payload_equal(const T& a, const T& b) {
+    T x = a;
+    T y = b;
+    x.crc32 = 0;
+    y.crc32 = 0;
+    return std::memcmp(&x, &y, sizeof(T)) == 0;
 }
 
 mds::Trade make_trade(int i) {
@@ -96,8 +106,8 @@ TEST_F(StorageRoundTripTest, TradeWriteRead1000RecordsFieldExact) {
     for (int i = 0; i < kCount; ++i) {
         mds::Trade got{};
         ASSERT_TRUE(reader.read_next(got)) << "failed at record " << i;
-        EXPECT_EQ(std::memcmp(&got, &original[i], sizeof(mds::Trade)), 0)
-            << "mismatch at record " << i;
+        EXPECT_TRUE(payload_equal(got, original[i])) << "mismatch at record " << i;
+        EXPECT_EQ(got.crc32, mds::compute_record_crc(got));
         EXPECT_EQ(got.exchange_ts_us, original[i].exchange_ts_us);
         EXPECT_EQ(got.recv_ts_us, original[i].recv_ts_us);
         EXPECT_EQ(got.trade_id, original[i].trade_id);
@@ -139,8 +149,8 @@ TEST_F(StorageRoundTripTest, OrderBookWriteRead1000RecordsFieldExact) {
     for (int i = 0; i < kCount; ++i) {
         mds::OrderBookSnapshot got{};
         ASSERT_TRUE(reader.read_next(got)) << "failed at record " << i;
-        EXPECT_EQ(std::memcmp(&got, &original[i], sizeof(mds::OrderBookSnapshot)), 0)
-            << "mismatch at record " << i;
+        EXPECT_TRUE(payload_equal(got, original[i])) << "mismatch at record " << i;
+        EXPECT_EQ(got.crc32, mds::compute_record_crc(got));
         EXPECT_EQ(got.recv_ts_us, original[i].recv_ts_us);
         EXPECT_STREQ(got.symbol, original[i].symbol);
         for (int level = 0; level < mds::ORDERBOOK_DEPTH; ++level) {
@@ -283,4 +293,104 @@ TEST_F(StorageRoundTripTest, RestartKeepsPreviousHourFile) {
     EXPECT_EQ(got.trade_id, hour_a.trade_id);
     ASSERT_TRUE(reader.read_next(got));
     EXPECT_EQ(got.trade_id, hour_b.trade_id);
+}
+
+TEST_F(StorageRoundTripTest, ReaderIgnoresTruncatedTail) {
+    {
+        mds::BinaryTradeWriter writer;
+        ASSERT_TRUE(writer.open(dir_.string(), 16));
+        ASSERT_TRUE(writer.write(make_trade(0)));
+        ASSERT_TRUE(writer.write(make_trade(1)));
+        ASSERT_TRUE(writer.write(make_trade(2)));
+        writer.close();
+    }
+
+    const auto path = only_trade_file(dir_);
+    ASSERT_FALSE(path.empty());
+    const auto full = sizeof(mds::TradeFileHeader) + 3 * sizeof(mds::Trade);
+    const auto truncated =
+        sizeof(mds::TradeFileHeader) + 2 * sizeof(mds::Trade) + sizeof(mds::Trade) / 2;
+    ASSERT_LT(truncated, full);
+    std::filesystem::resize_file(path, truncated);
+
+    mds::BinaryTradeReader reader;
+    ASSERT_TRUE(reader.open(dir_.string()));
+    mds::Trade got{};
+    ASSERT_TRUE(reader.read_next(got));
+    EXPECT_EQ(got.trade_id, make_trade(0).trade_id);
+    ASSERT_TRUE(reader.read_next(got));
+    EXPECT_EQ(got.trade_id, make_trade(1).trade_id);
+    EXPECT_FALSE(reader.read_next(got));
+    EXPECT_FALSE(reader.has_error());
+}
+
+TEST_F(StorageRoundTripTest, ReaderStopsOnMiddleCrcMismatch) {
+    {
+        mds::BinaryTradeWriter writer;
+        ASSERT_TRUE(writer.open(dir_.string(), 16));
+        ASSERT_TRUE(writer.write(make_trade(0)));
+        ASSERT_TRUE(writer.write(make_trade(1)));
+        ASSERT_TRUE(writer.write(make_trade(2)));
+        writer.close();
+    }
+
+    const auto path = only_trade_file(dir_);
+    ASSERT_FALSE(path.empty());
+    std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+    ASSERT_TRUE(f.is_open());
+    const auto off = static_cast<std::streamoff>(
+        sizeof(mds::TradeFileHeader) + sizeof(mds::Trade) +
+        offsetof(mds::Trade, price));
+    f.seekp(off);
+    const char flip = 0x7F;
+    f.write(&flip, 1);
+    ASSERT_TRUE(f.good());
+    f.close();
+
+    mds::BinaryTradeReader reader;
+    ASSERT_TRUE(reader.open(dir_.string()));
+    mds::Trade got{};
+    ASSERT_TRUE(reader.read_next(got));
+    EXPECT_EQ(got.trade_id, make_trade(0).trade_id);
+    EXPECT_FALSE(reader.read_next(got));
+    EXPECT_TRUE(reader.has_error());
+}
+
+TEST_F(StorageRoundTripTest, WriterRepairsTruncatedTailThenAppends) {
+    {
+        mds::BinaryTradeWriter writer;
+        ASSERT_TRUE(writer.open(dir_.string(), 16));
+        ASSERT_TRUE(writer.write(make_trade(0)));
+        ASSERT_TRUE(writer.write(make_trade(1)));
+        ASSERT_TRUE(writer.write(make_trade(2)));
+        writer.close();
+    }
+
+    const auto path = only_trade_file(dir_);
+    ASSERT_FALSE(path.empty());
+    const auto truncated =
+        sizeof(mds::TradeFileHeader) + 2 * sizeof(mds::Trade) + sizeof(mds::Trade) / 2;
+    std::filesystem::resize_file(path, truncated);
+
+    {
+        mds::BinaryTradeWriter writer;
+        ASSERT_TRUE(writer.open(dir_.string(), 16));
+        ASSERT_TRUE(writer.write(make_trade(3)));
+        writer.close();
+        EXPECT_GT(writer.tail_bytes_discarded(), 0u);
+        EXPECT_FALSE(writer.has_error());
+    }
+
+    mds::BinaryTradeReader reader;
+    ASSERT_TRUE(reader.open(dir_.string()));
+    EXPECT_EQ(reader.get_record_count(), 3u);
+    mds::Trade got{};
+    ASSERT_TRUE(reader.read_next(got));
+    EXPECT_EQ(got.trade_id, make_trade(0).trade_id);
+    ASSERT_TRUE(reader.read_next(got));
+    EXPECT_EQ(got.trade_id, make_trade(1).trade_id);
+    ASSERT_TRUE(reader.read_next(got));
+    EXPECT_EQ(got.trade_id, make_trade(3).trade_id);
+    EXPECT_FALSE(reader.read_next(got));
+    EXPECT_FALSE(reader.has_error());
 }

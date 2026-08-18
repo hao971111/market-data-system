@@ -21,6 +21,7 @@ add_executable(mds_unit_tests
     unit/parse_orderbook_test.cpp
     unit/storage_roundtrip_test.cpp
     unit/file_roll_test.cpp
+    unit/record_crc_test.cpp
     unit/ring_buffer_test.cpp
     unit/replayer_test.cpp
     unit/symbol_case_test.cpp

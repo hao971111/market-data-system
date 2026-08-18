@@ -1,6 +1,7 @@
 #pragma once
 
 #include "file_roll.h"
+#include "record_integrity.h"
 
 #include <atomic>
 #include <chrono>
@@ -26,7 +27,7 @@ namespace mds {
 //   - static constexpr const char* file_prefix / file_name
 //   - 默认构造对象可直接写入文件头
 //   - record_count_offset()
-// Record 需要有 recv_ts_us（<=0 时用写入时刻的 wall clock）。
+// Record 需要有 recv_ts_us（<=0 时用写入时刻的 wall clock）和 crc32。
 template <typename Record, typename Header>
 class BinaryRecordWriter {
     static_assert(std::is_trivially_copyable<Record>::value,
@@ -69,6 +70,7 @@ public:
         queue_capacity_ = queue_capacity;
         records_written_.store(0, std::memory_order_relaxed);
         records_dropped_.store(0, std::memory_order_relaxed);
+        tail_bytes_discarded_.store(0, std::memory_order_relaxed);
         write_error_.store(false, std::memory_order_relaxed);
         queue_depth_max_ = 0;
         running_ = true;
@@ -128,6 +130,10 @@ public:
         return records_dropped_.load(std::memory_order_relaxed);
     }
 
+    uint64_t tail_bytes_discarded() const {
+        return tail_bytes_discarded_.load(std::memory_order_relaxed);
+    }
+
     bool has_error() const {
         return write_error_.load(std::memory_order_relaxed);
     }
@@ -172,6 +178,10 @@ private:
             }
             records_written_.fetch_add(written, std::memory_order_relaxed);
 
+            if (!write_failed && written > 0 && !persist_header_count()) {
+                write_failed = true;
+            }
+
             if (write_failed) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 write_error_.store(true, std::memory_order_relaxed);
@@ -210,7 +220,9 @@ private:
             }
         }
 
-        file_.write(reinterpret_cast<const char*>(&record), sizeof(record));
+        Record stamped = record;
+        stamp_record_crc(stamped);
+        file_.write(reinterpret_cast<const char*>(&stamped), sizeof(stamped));
         if (!file_.good()) {
             return false;
         }
@@ -225,19 +237,7 @@ private:
             return true;
         }
 
-        bool ok = true;
-        if (!write_error_.load(std::memory_order_relaxed)) {
-            file_.clear();
-            file_.seekp(static_cast<std::streamoff>(Header::record_count_offset()));
-            const uint64_t n = file_record_count_;
-            file_.write(reinterpret_cast<const char*>(&n), sizeof(n));
-            if (file_.fail()) {
-                ok = false;
-                write_error_.store(true, std::memory_order_relaxed);
-                std::cerr << "[ERROR] Failed to write record_count to file header"
-                          << std::endl;
-            }
-        }
+        bool ok = persist_header_count();
         file_.flush();
         file_.close();
         if (file_.fail()) {
@@ -251,45 +251,48 @@ private:
         return ok;
     }
 
+    bool persist_header_count() {
+        if (!file_.is_open()) {
+            return true;
+        }
+        if (write_error_.load(std::memory_order_relaxed)) {
+            return false;
+        }
+        const auto pos = file_.tellp();
+        file_.clear();
+        file_.seekp(static_cast<std::streamoff>(Header::record_count_offset()));
+        const uint64_t n = file_record_count_;
+        file_.write(reinterpret_cast<const char*>(&n), sizeof(n));
+        file_.seekp(pos);
+        file_.flush();
+        if (file_.fail()) {
+            write_error_.store(true, std::memory_order_relaxed);
+            std::cerr << "[ERROR] Failed to write record_count to file header"
+                      << std::endl;
+            return false;
+        }
+        return true;
+    }
+
     bool open_file(const std::string& name) {
         const auto path = std::filesystem::path(data_dir_) / name;
         std::error_code ec;
         const bool exists = std::filesystem::exists(path, ec);
 
         if (exists) {
+            const auto repaired = repair_record_file<Record, Header>(path);
+            if (!repaired.ok) {
+                return false;
+            }
+            tail_bytes_discarded_.fetch_add(repaired.bytes_discarded,
+                                            std::memory_order_relaxed);
+
             file_.open(path, std::ios::binary | std::ios::in | std::ios::out);
             if (!file_.is_open()) {
                 std::cerr << "[ERROR] Failed to reopen binary file: " << path << std::endl;
                 return false;
             }
-
-            Header header{};
-            file_.read(reinterpret_cast<char*>(&header), sizeof(header));
-            if (!file_.good()) {
-                std::cerr << "[ERROR] Invalid binary file header: " << path << std::endl;
-                file_.close();
-                return false;
-            }
-            const Header expected;
-            if (std::memcmp(header.magic, expected.magic, sizeof(expected.magic)) != 0 ||
-                header.version != expected.version ||
-                header.record_size != sizeof(Record)) {
-                std::cerr << "[ERROR] Existing file header mismatch, refusing to append: "
-                          << path << std::endl;
-                file_.close();
-                return false;
-            }
-
-            const auto sz = std::filesystem::file_size(path, ec);
-            if (ec || sz < sizeof(Header) ||
-                (sz - sizeof(Header)) % sizeof(Record) != 0) {
-                std::cerr << "[ERROR] Existing file size is not a complete record set: "
-                          << path << std::endl;
-                file_.close();
-                return false;
-            }
-            file_record_count_ = static_cast<uint64_t>(
-                (sz - sizeof(Header)) / sizeof(Record));
+            file_record_count_ = repaired.valid_records;
             file_.clear();
             file_.seekp(0, std::ios::end);
             if (!file_.good()) {
@@ -332,6 +335,7 @@ private:
     size_t queue_capacity_ = 100000;
     std::atomic<uint64_t> records_written_{0};
     std::atomic<uint64_t> records_dropped_{0};
+    std::atomic<uint64_t> tail_bytes_discarded_{0};
     std::atomic<bool> write_error_{false};
     uint64_t queue_depth_max_ = 0;
 };

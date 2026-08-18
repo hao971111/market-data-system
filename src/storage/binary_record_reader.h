@@ -1,6 +1,7 @@
 #pragma once
 
 #include "file_roll.h"
+#include "record_integrity.h"
 
 #include <cstring>
 #include <filesystem>
@@ -71,14 +72,20 @@ public:
             file_.read(reinterpret_cast<char*>(&record), sizeof(record));
             const auto bytes_read = file_.gcount();
             if (bytes_read == static_cast<std::streamsize>(sizeof(record))) {
+                if (!record_crc_ok(record)) {
+                    read_error_ = true;
+                    std::cerr << "[ERROR] CRC mismatch in " << files_[file_index_]
+                              << std::endl;
+                    return false;
+                }
                 return true;
             }
 
             if (bytes_read > 0) {
-                read_error_ = true;
-                std::cerr << "[ERROR] Truncated record: read " << bytes_read
-                          << " bytes, expected " << sizeof(record) << std::endl;
-                return false;
+                // 尾部半条：崩溃残留，不是中间损坏。丢掉尾巴，换下一个文件。
+                std::cerr << "[WARN] Truncated record at end of " << files_[file_index_]
+                          << ": read " << bytes_read << " bytes, expected "
+                          << sizeof(record) << std::endl;
             }
 
             ++file_index_;

@@ -12,7 +12,8 @@ namespace mds {
 //
 // 落盘格式 version=2。按 UTC 小时切分 trades_YYYYMMDD_HH.bin。
 // 旧 data/trades.bin（version=1 / 56 字节记录）不兼容。
-// crc32 预留给 Step 16，当前恒为 0，不参与校验。
+// crc32：IEEE CRC-32，覆盖整条记录（计算时该字段按 0）。Writer 写入前盖章，Reader 校验。
+// 旧记录 crc32==0 视为未盖章，不验。
 struct Trade {
     int64_t exchange_ts_us;  // 交易所报文时间（微秒）
     int64_t recv_ts_us;      // 本进程收到消息的时间（system_clock）
@@ -22,7 +23,7 @@ struct Trade {
     char symbol[16];
     bool is_buyer_maker;
     char padding[3];
-    uint32_t crc32;  // reserved（Step 16）
+    uint32_t crc32;  // IEEE CRC-32；0 = 旧文件未盖章
 
     void set_symbol(std::string_view sym) {
         const std::size_t len = std::min(sym.size(), sizeof(symbol) - 1);
@@ -53,7 +54,7 @@ constexpr int ORDERBOOK_DEPTH = 20;
 //
 // 落盘格式 version=2。按 UTC 小时切分 orderbooks_YYYYMMDD_HH.bin。
 // 旧 data/orderbooks.bin 不兼容。
-// crc32 预留给 Step 16，当前恒为 0。
+// crc32：IEEE CRC-32，覆盖整条记录（计算时该字段按 0）。旧记录 0 不验。
 struct OrderBookSnapshot {
     int64_t exchange_ts_us;
     int64_t recv_ts_us;
@@ -61,7 +62,7 @@ struct OrderBookSnapshot {
     char symbol[16];
     OrderBookLevel bids[ORDERBOOK_DEPTH];
     OrderBookLevel asks[ORDERBOOK_DEPTH];
-    uint32_t crc32;  // reserved（Step 16）
+    uint32_t crc32;  // IEEE CRC-32；0 = 旧文件未盖章
     char padding[4];
 
     void set_symbol(std::string_view sym) {
