@@ -6,6 +6,7 @@
 #include "replay/order_book_replayer.h"
 #include "replay/record_replayer.h"
 #include "replay/trade_replayer.h"
+#include "storage/file_roll.h"
 
 namespace mds {
 
@@ -17,20 +18,24 @@ public:
 
     const std::string& data_dir() const noexcept { return data_dir_; }
 
-    Replayer::Result replay_trades(TradeCallback cb) {
+    Replayer::Result replay_trades(TradeCallback cb,
+                                   std::optional<int64_t> from_us,
+                                   std::optional<int64_t> to_us) {
         TradeReplayer trade_replayer;
         // 直接把用户回调 move 进内部，让 replay_all 自己处理空 / 抛异常。
         // 不在 facade 再包一层 lambda，避免空 std::function 被包成"永远 truthy"
         // 的 lambda、必须走 bad_function_call 异常路径才能识别空回调。
-        const auto inner =
-            trade_replayer.replay_all(data_dir_, std::move(cb));
+        const auto inner = trade_replayer.replay_all(
+            data_dir_, std::move(cb), TimeWindow{from_us, to_us});
         return to_public(inner);
     }
 
-    Replayer::Result replay_orderbooks(OrderBookCallback cb) {
+    Replayer::Result replay_orderbooks(OrderBookCallback cb,
+                                       std::optional<int64_t> from_us,
+                                       std::optional<int64_t> to_us) {
         OrderBookReplayer ob_replayer;
-        const auto inner =
-            ob_replayer.replay_all(data_dir_, std::move(cb));
+        const auto inner = ob_replayer.replay_all(
+            data_dir_, std::move(cb), TimeWindow{from_us, to_us});
         return to_public(inner);
     }
 
@@ -62,12 +67,16 @@ Replayer::~Replayer() = default;
 Replayer::Replayer(Replayer&&) noexcept = default;
 Replayer& Replayer::operator=(Replayer&&) noexcept = default;
 
-Replayer::Result Replayer::replay_trades(TradeCallback callback) {
-    return impl_->replay_trades(std::move(callback));
+Replayer::Result Replayer::replay_trades(TradeCallback callback,
+                                         std::optional<int64_t> from_us,
+                                         std::optional<int64_t> to_us) {
+    return impl_->replay_trades(std::move(callback), from_us, to_us);
 }
 
-Replayer::Result Replayer::replay_orderbooks(OrderBookCallback callback) {
-    return impl_->replay_orderbooks(std::move(callback));
+Replayer::Result Replayer::replay_orderbooks(OrderBookCallback callback,
+                                             std::optional<int64_t> from_us,
+                                             std::optional<int64_t> to_us) {
+    return impl_->replay_orderbooks(std::move(callback), from_us, to_us);
 }
 
 const std::string& Replayer::data_dir() const noexcept {

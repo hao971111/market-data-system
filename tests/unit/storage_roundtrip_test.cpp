@@ -36,8 +36,7 @@ protected:
 };
 
 std::filesystem::path only_trade_file(const std::filesystem::path& dir) {
-    const auto files = mds::list_record_files(dir, mds::TradeFileHeader::file_prefix,
-                                              mds::TradeFileHeader::file_name);
+    const auto files = mds::list_record_files(dir, mds::TradeFileHeader::file_prefix);
     return files.size() == 1 ? files.front() : std::filesystem::path{};
 }
 
@@ -208,7 +207,7 @@ TEST_F(StorageRoundTripTest, SameHourRestartAppendsWithoutTrunc) {
     }
 
     const auto files = mds::list_record_files(
-        dir_, mds::TradeFileHeader::file_prefix, mds::TradeFileHeader::file_name);
+        dir_, mds::TradeFileHeader::file_prefix);
     ASSERT_EQ(files.size(), 1u);
 
     mds::BinaryTradeReader reader;
@@ -240,7 +239,7 @@ TEST_F(StorageRoundTripTest, HourBoundaryCreatesTwoFilesAndReaderConcatenates) {
     }
 
     const auto files = mds::list_record_files(
-        dir_, mds::TradeFileHeader::file_prefix, mds::TradeFileHeader::file_name);
+        dir_, mds::TradeFileHeader::file_prefix);
     ASSERT_EQ(files.size(), 2u);
     EXPECT_EQ(files[0].filename().string(),
               mds::hourly_file_name("trades", first.recv_ts_us));
@@ -282,7 +281,7 @@ TEST_F(StorageRoundTripTest, RestartKeepsPreviousHourFile) {
     }
 
     const auto files = mds::list_record_files(
-        dir_, mds::TradeFileHeader::file_prefix, mds::TradeFileHeader::file_name);
+        dir_, mds::TradeFileHeader::file_prefix);
     ASSERT_EQ(files.size(), 2u);
 
     mds::BinaryTradeReader reader;

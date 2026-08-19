@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../storage/file_roll.h"
+
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -18,13 +20,15 @@ struct ReplayResult {
 };
 
 // 顺序回放二进制记录文件的通用模板。
-// Reader 需提供：bool open(const std::string&); bool read_next(Record&); void close(); bool has_error() const;
+// Reader 需提供：open(dir) / open(dir, TimeWindow)、read_next、close、has_error、
+// get_record_count、time_window_active。
 template <typename Record, typename Reader>
 class RecordReplayer {
 public:
     using Callback = std::function<void(const Record&)>;
 
-    ReplayResult replay_all(const std::string& data_dir, Callback callback) {
+    ReplayResult replay_all(const std::string& data_dir, Callback callback,
+                            TimeWindow window = {}) {
         ReplayResult result;
         if (!callback) {
             std::cerr << "[ERROR] Replay callback is empty" << std::endl;
@@ -33,7 +37,7 @@ public:
         }
 
         Reader reader;
-        if (!reader.open(data_dir)) {
+        if (!reader.open(data_dir, window)) {
             result.file_error = true;
             return result;
         }
@@ -63,7 +67,9 @@ public:
         result.header_record_count = reader.get_record_count();
         // file_error 时 replayed 必然 < header_count，是读取截断导致的，
         // 不额外设 count_mismatch（file_error 本身已说明问题）。
+        // 时间窗回放会丢掉窗外记录，header 条数和回调条数对不上是预期行为。
         if (!result.file_error &&
+            !reader.time_window_active() &&
             result.header_record_count > 0 &&
             result.records_replayed != result.header_record_count) {
             result.count_mismatch = true;

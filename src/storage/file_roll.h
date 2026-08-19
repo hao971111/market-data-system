@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -13,7 +14,26 @@
 namespace mds {
 
 // 按 UTC 小时切分：trades_YYYYMMDD_HH.bin / orderbooks_YYYYMMDD_HH.bin。
-// 文件名按字典序即时间序。旧的单文件 trades.bin / orderbooks.bin 仍可被 Reader 扫到。
+// 文件名按字典序即时间序。只认这种小时文件，其它名字（含旧的 trades.bin）忽略。
+
+struct TimeWindow {
+    std::optional<int64_t> from_us;  // 含端点；nullopt = 不限制
+    std::optional<int64_t> to_us;
+
+    bool empty() const { return !from_us.has_value() && !to_us.has_value(); }
+    bool valid() const {
+        return !(from_us.has_value() && to_us.has_value() && *from_us > *to_us);
+    }
+    bool contains(int64_t ts_us) const {
+        if (from_us.has_value() && ts_us < *from_us) {
+            return false;
+        }
+        if (to_us.has_value() && ts_us > *to_us) {
+            return false;
+        }
+        return true;
+    }
+};
 
 inline std::string hourly_file_name(const char* prefix, int64_t ts_us) {
     if (ts_us < 0) {
@@ -61,10 +81,27 @@ inline bool is_hourly_file_name(std::string_view prefix, std::string_view name) 
            std::isdigit(static_cast<unsigned char>(p[10]));
 }
 
+// 小时文件名按字典序即时间序，和 hourly_file_name(from/to) 做闭区间比较。
+inline bool hourly_file_in_window(const char* prefix, std::string_view name,
+                                  const TimeWindow& window) {
+    if (!is_hourly_file_name(prefix, name)) {
+        return false;
+    }
+    if (window.from_us.has_value() &&
+        name < hourly_file_name(prefix, *window.from_us)) {
+        return false;
+    }
+    if (window.to_us.has_value() &&
+        name > hourly_file_name(prefix, *window.to_us)) {
+        return false;
+    }
+    return true;
+}
+
 inline std::vector<std::filesystem::path> list_record_files(
     const std::filesystem::path& dir,
     const char* prefix,
-    const char* legacy_name) {
+    const TimeWindow& window = {}) {
     std::vector<std::filesystem::path> out;
     std::error_code ec;
     if (!std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec)) {
@@ -75,11 +112,7 @@ inline std::vector<std::filesystem::path> list_record_files(
             continue;
         }
         const auto name = entry.path().filename().string();
-        if (legacy_name != nullptr && name == legacy_name) {
-            out.push_back(entry.path());
-            continue;
-        }
-        if (is_hourly_file_name(prefix, name)) {
+        if (hourly_file_in_window(prefix, name, window)) {
             out.push_back(entry.path());
         }
     }

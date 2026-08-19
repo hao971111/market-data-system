@@ -24,7 +24,7 @@ namespace mds {
 // 异步二进制写盘模板：生产者只入队，后台线程批量落盘。
 // 按 UTC 小时切文件（Header::file_prefix_YYYYMMDD_HH.bin），启动不 trunc。
 // Header 需要提供：
-//   - static constexpr const char* file_prefix / file_name
+//   - static constexpr const char* file_prefix
 //   - 默认构造对象可直接写入文件头
 //   - record_count_offset()
 // Record 需要有 recv_ts_us（<=0 时用写入时刻的 wall clock）和 crc32。

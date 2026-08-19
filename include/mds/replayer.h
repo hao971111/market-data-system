@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "mds/types.h"
@@ -26,6 +27,7 @@ public:
     //   file_error         ：reader 报告文件读取异常（文件不存在/损坏/截断）。
     //   callback_error     ：回调为空，或回调抛异常被库捕获，回放在该位置中断。
     //   count_mismatch     ：file_error=false 且 header>0 时，replayed 与 header 不一致。
+    //                        传入 from/to 时不判定（窗外记录被丢掉是预期行为）。
     struct Result {
         uint64_t header_record_count = 0;
         uint64_t records_replayed    = 0;
@@ -46,12 +48,18 @@ public:
     Replayer(Replayer&&) noexcept;
     Replayer& operator=(Replayer&&) noexcept;
 
-    // 顺序回放 data_dir 下全部 trades_*.bin（含旧的 trades.bin）。
+    // 顺序回放 data_dir 下 trades_YYYYMMDD_HH.bin。
+    // from_us / to_us 按 recv_ts_us 闭区间过滤；任一为 nullopt 表示该侧不限制。
+    // 都不传：和原来一样全量回放。只打开与窗口相交的小时文件。
     // 空回调 / 回调抛异常会被记入 Result.callback_error，并提前中断回放。
-    Result replay_trades(TradeCallback callback);
+    Result replay_trades(TradeCallback callback,
+                         std::optional<int64_t> from_us = std::nullopt,
+                         std::optional<int64_t> to_us = std::nullopt);
 
-    // 顺序回放 data_dir 下全部 orderbooks_*.bin。语义同上。
-    Result replay_orderbooks(OrderBookCallback callback);
+    // 顺序回放 data_dir 下 orderbooks_*.bin。语义同上。
+    Result replay_orderbooks(OrderBookCallback callback,
+                             std::optional<int64_t> from_us = std::nullopt,
+                             std::optional<int64_t> to_us = std::nullopt);
 
     // 构造时传入的数据目录，仅用于诊断。
     const std::string& data_dir() const noexcept;

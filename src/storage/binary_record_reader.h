@@ -14,9 +14,10 @@
 namespace mds {
 
 // 顺序读取二进制记录文件的通用模板：和 BinaryRecordWriter 对称。
-// 打开目录后按时间序读完所有小时文件（以及旧的单文件 Header::file_name）。
+// 打开目录后按时间序读完所有小时文件。
+// 传入 TimeWindow 时只打开与窗口相交的小时文件，并按 recv_ts_us 丢掉窗外记录。
 // Header 需要提供：
-//   - static constexpr const char* file_prefix / file_name
+//   - static constexpr const char* file_prefix
 //   - 可默认构造，对象内的字段与文件内已有头匹配（magic / version / record_size）
 template <typename Record, typename Header>
 class BinaryRecordReader {
@@ -31,13 +32,26 @@ class BinaryRecordReader {
 
 public:
     bool open(const std::string& data_dir) {
+        return open(data_dir, TimeWindow{});
+    }
+
+    // window 为空：扫全部小时文件。
+    // window 非空：只打开文件名与窗口相交的小时文件；目录里没有这类文件算成功（0 条）。
+    bool open(const std::string& data_dir, const TimeWindow& window) {
         close();
         read_error_ = false;
-        total_record_count_ = 0;
-        file_index_ = 0;
+        if (!window.valid()) {
+            std::cerr << "[ERROR] Invalid time window: from > to" << std::endl;
+            return false;
+        }
+        window_ = window;
+        windowed_ = !window.empty();
 
-        files_ = list_record_files(data_dir, Header::file_prefix, Header::file_name);
+        files_ = list_record_files(data_dir, Header::file_prefix, window_);
         if (files_.empty()) {
+            if (windowed_) {
+                return true;
+            }
             std::cerr << "[ERROR] No binary record files in " << data_dir
                       << " (expected " << Header::file_prefix
                       << "_YYYYMMDD_HH.bin)" << std::endl;
@@ -78,6 +92,9 @@ public:
                               << std::endl;
                     return false;
                 }
+                if (!window_.contains(record.recv_ts_us)) {
+                    continue;
+                }
                 return true;
             }
 
@@ -109,9 +126,14 @@ public:
         file_index_ = 0;
         total_record_count_ = 0;
         header_ = Header{};
+        window_ = {};
+        windowed_ = false;
     }
 
     bool has_error() const { return read_error_; }
+
+    // 打开时带了 from/to。窗口回放时 header 条数和回调条数对不上是预期行为。
+    bool time_window_active() const { return windowed_; }
 
 private:
     static bool read_and_check_header(std::ifstream& file,
@@ -168,6 +190,8 @@ private:
     std::size_t file_index_ = 0;
     uint64_t total_record_count_ = 0;
     bool read_error_ = false;
+    TimeWindow window_{};
+    bool windowed_ = false;
 };
 
 }  // namespace mds
